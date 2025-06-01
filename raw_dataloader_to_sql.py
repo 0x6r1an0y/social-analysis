@@ -17,7 +17,7 @@ TABLE_NAME = "posts"             # 你要創建的資料表名稱
 
 # --- 2. 設定 CSV 檔案路徑和分塊大小 ---
 CSV_FILE_PATH = "merged_output.csv"
-CHUNK_SIZE = 2000000  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
+CHUNK_SIZE = 200000  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
 
 # --- 3. 檢查並創建資料庫 ---
 try:
@@ -145,11 +145,28 @@ try:
             print(f"目前已處理總資料筆數: {total_rows_processed}")
 
         except Exception as e:
-            print(f"將第 {i+1} 個區塊插入資料庫時發生錯誤: {e}")
-            print("有問題的區塊資料範例 (前 5 筆):")
-            print(chunk.head())
-            print("繼續處理下一個區塊...")
-            continue # 跳過這個 chunk
+            print(f"⚠️ 將第 {i+1} 個區塊插入資料庫時發生錯誤: {e}")
+            print("➡️ 嘗試逐列偵錯以找出異常資料...")
+
+            for row_idx, row in chunk.iterrows():
+                try:
+                    row_df = pd.DataFrame([row])
+                    row_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
+                except Exception as row_err:
+                    print(f"❌ 第 {i+1} 區塊中第 {row_idx} 列寫入錯誤: {row_err}")
+                    print("🔍 該筆資料如下：")
+                    print(row)
+                    print("🔬 嘗試逐欄位偵錯：")
+                    for col in row.index:
+                        try:
+                            test_df = pd.DataFrame([{col: row[col]}])
+                            test_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
+                        except Exception as col_err:
+                            print(f"    🔴 欄位 '{col}' 發生錯誤: {col_err}")
+                    print("-" * 60)
+
+            print("➡️ 已完成該區塊逐列分析，繼續處理下一個區塊...")
+            continue
 
     end_time = time.time()
     print(f"成功匯入 {total_rows_processed} 筆資料到 '{TABLE_NAME}'。")
