@@ -1,55 +1,38 @@
 import pandas as pd
 
-chunk_size = 10**6  # 一百萬筆
-seen_pos_tid = set()
-output_file = "cleaned_output.csv"
+# 讀取原始資料
+df = pd.read_csv("merged_output.csv")
+original_count = len(df)
 
-# 先寫入標題（第一次清空）
-with open(output_file, "w", encoding="utf-8") as f:
-    f.write("pos_tid,post_type,page_category,page_name,page_id,content,created_time,reaction_all,comment_count,share_count,date\n")
+print(f"原始總筆數：{original_count}")
 
-total_original = 0
-total_kept = 0
-total_removed_empty_pos_tid = 0
-total_removed_empty_content = 0
-total_removed_duplicates = 0
+# 清除所有欄位皆為空的列
+empty_all_count = df.isnull().all(axis=1).sum()
+df = df.dropna(how='all')
 
-for chunk in pd.read_csv("merged_output.csv", chunksize=chunk_size):
+# 清除 pos_tid 為空的列
+empty_pos_tid_count = df['pos_tid'].isnull().sum() + (df['pos_tid'].astype(str).str.strip() == '').sum()
+df = df[df['pos_tid'].notna() & (df['pos_tid'].astype(str).str.strip() != '')]
 
-    total_original += len(chunk)
+# 清除 content 為空的列
+empty_content_count = df['content'].isnull().sum() + (df['content'].astype(str).str.strip() == '').sum()
+df = df[df['content'].notna() & (df['content'].astype(str).str.strip() != '')]
 
-    # 去除 pos_tid 空或空白的
-    mask_pos_tid = chunk['pos_tid'].notna() & (chunk['pos_tid'].astype(str).str.strip() != '')
-    removed_empty_pos_tid = (~mask_pos_tid).sum()
-    total_removed_empty_pos_tid += removed_empty_pos_tid
-    chunk = chunk[mask_pos_tid]
+# 清除 pos_tid 重複的列（保留第一筆）
+duplicate_count = df.duplicated(subset='pos_tid').sum()
+df = df.drop_duplicates(subset='pos_tid', keep='first')
 
-    # 去除 content 空或空白的
-    mask_content = chunk['content'].notna() & (chunk['content'].astype(str).str.strip() != '')
-    removed_empty_content = (~mask_content).sum()
-    total_removed_empty_content += removed_empty_content
-    chunk = chunk[mask_content]
+# 最後資料筆數
+final_count = len(df)
 
-    # 去除重複 pos_tid (跨 chunk 判重)
-    def not_seen(pos_tid):
-        if pos_tid in seen_pos_tid:
-            return False
-        else:
-            seen_pos_tid.add(pos_tid)
-            return True
+# 儲存結果
+df.to_csv("cleaned_output.csv", index=False)
 
-    mask_not_dup = chunk['pos_tid'].apply(not_seen)
-    removed_dup = (~mask_not_dup).sum()
-    total_removed_duplicates += removed_dup
-    chunk = chunk[mask_not_dup]
-
-    total_kept += len(chunk)
-
-    # 寫入清洗過的結果，mode="a"代表append
-    chunk.to_csv(output_file, mode="a", index=False, header=False, encoding="utf-8")
-
-print(f"原始筆數：{total_original}")
-print(f"刪除空主鍵：{total_removed_empty_pos_tid}")
-print(f"刪除空 content：{total_removed_empty_content}")
-print(f"刪除重複主鍵：{total_removed_duplicates}")
-print(f"清洗後筆數：{total_kept}")
+# 印出統計資訊
+print(f"🔍 清洗筆數統計：")
+print(f"    ✂️ 全欄空值刪除：{empty_all_count} 筆")
+print(f"    ✂️ 主鍵 pos_tid 為空刪除：{empty_pos_tid_count} 筆")
+print(f"    ✂️ content 為空刪除：{empty_content_count} 筆")
+print(f"    ✂️ 主鍵 pos_tid 重複刪除：{duplicate_count} 筆")
+print(f"✅ 清洗後剩下：{final_count} 筆")
+print(f"📁 已輸出至 cleaned_output.csv")
