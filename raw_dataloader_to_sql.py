@@ -16,8 +16,8 @@ DB_NAME = "social_media_analysis" # 你創建的資料庫名稱
 TABLE_NAME = "posts"             # 你要創建的資料表名稱
 
 # --- 2. 設定 CSV 檔案路徑和分塊大小 ---
-CSV_FILE_PATH = "merged_output.csv"
-CHUNK_SIZE = 200000  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
+CSV_FILE_PATH = "cleaned_output.csv"
+CHUNK_SIZE = 2000000  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
 
 # --- 3. 檢查並創建資料庫 ---
 try:
@@ -152,21 +152,29 @@ try:
                 try:
                     row_df = pd.DataFrame([row])
                     row_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
-                except Exception as row_err:
-                    print(f"❌ 第 {i+1} 區塊中第 {row_idx} 列寫入錯誤: {row_err}")
-                    print("🔍 該筆資料如下：")
-                    print(row)
-                    print("🔬 嘗試逐欄位偵錯：")
-                    for col in row.index:
-                        try:
-                            test_df = pd.DataFrame([{col: row[col]}])
-                            test_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
-                        except Exception as col_err:
-                            print(f"    🔴 欄位 '{col}' 發生錯誤: {col_err}")
-                    print("-" * 60)
+                except Exception as e:
+                    print(f"❌ 第 {i+1} 區塊寫入失敗，錯誤訊息: {e}")
+                    print("➡️ 嘗試逐列偵錯以找出異常資料...")
 
-            print("➡️ 已完成該區塊逐列分析，繼續處理下一個區塊...")
-            continue
+                    for j, row in chunk.iterrows():
+                        try:
+                            row_df = pd.DataFrame([row])
+                            row_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False, method='multi')
+                        except Exception as row_error:
+                            print(f"❌ 第 {i+1} 區塊中第 {j} 列寫入錯誤: {row_error}")
+                            print("🔍 該筆資料如下：")
+                            print(row)
+
+                            # 欄位逐一偵測
+                            print("🔬 嘗試逐欄位偵錯：")
+                            for col in row.index:
+                                try:
+                                    col_df = pd.DataFrame([{col: row[col]}])
+                                    col_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
+                                except Exception as col_error:
+                                    print(f"    🔴 欄位 '{col}' 發生錯誤: {col_error}")
+                    print("------------------------------------------------------------")
+                    continue  # 跳過這個 chunk
 
     end_time = time.time()
     print(f"成功匯入 {total_rows_processed} 筆資料到 '{TABLE_NAME}'。")
