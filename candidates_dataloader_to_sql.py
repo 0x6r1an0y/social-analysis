@@ -27,7 +27,7 @@ source_engine = create_engine("postgresql+psycopg2://postgres:00000000@localhost
 target_engine = create_engine("postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db")
 
 # 1. 撈出 4000 筆疑似詐騙貼文
-keywords = ['穩賺', '保證獲利', '老師帶你賺', '量化交易', '虛擬貨幣']
+keywords = ['穩賺', '借貸', '老師帶你賺', '量化交易', '虛擬貨幣', '急用', '輕鬆', '投資']
 where_clause = " OR ".join([f"content ILIKE '%{kw}%'" for kw in keywords])
 sql = f"SELECT pos_tid, content FROM posts WHERE {where_clause} LIMIT 4000"
 
