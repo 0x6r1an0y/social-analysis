@@ -17,7 +17,7 @@ TABLE_NAME = "posts"             # 你要創建的資料表名稱
 
 # --- 2. 設定 CSV 檔案路徑和分塊大小 ---
 CSV_FILE_PATH = "cleaned_output.csv"
-CHUNK_SIZE = 2000000  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
+CHUNK_SIZE = 10  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
 
 # --- 3. 檢查並創建資料庫 ---
 try:
@@ -73,13 +73,13 @@ except Exception as e:
 create_table_sql = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
     pos_tid VARCHAR(255) PRIMARY KEY,
-    post_type VARCHAR(255),
+    post_type VARCHAR(255) DEFAULT 'unknown',  -- 設定預設值
     page_category TEXT,
     page_name TEXT,
     page_id VARCHAR(255),
     content TEXT,
     created_time BIGINT,
-    reaction_all INTEGER,
+    reaction_all BIGINT,  -- 改用 BIGINT 以支援更大的數值範圍
     comment_count INTEGER,
     share_count INTEGER,
     date DATE
@@ -100,89 +100,166 @@ except Exception as e:
 # --- 6. 分塊讀取 CSV 並寫入資料庫 ---
 start_time = time.time()
 total_rows_processed = 0
+error_rows = []  # 用於記錄錯誤的資料
+error_details = []  # 用於記錄詳細錯誤資訊
 
 print(f"開始從 '{CSV_FILE_PATH}' 匯入資料到資料表 '{TABLE_NAME}'...")
 
+def analyze_error_data(chunk, error_msg):
+    """分析錯誤資料的詳細資訊"""
+    error_info = {
+        'error_type': type(error_msg).__name__,
+        'error_message': str(error_msg),
+        'sample_data': None,
+        'data_types': None,
+        'null_counts': None,
+        'duplicate_pos_tid': None
+    }
+    
+    # 檢查資料型別
+    error_info['data_types'] = chunk.dtypes.to_dict()
+    
+    # 檢查空值數量
+    error_info['null_counts'] = chunk.isnull().sum().to_dict()
+    
+    # 檢查 pos_tid 重複
+    if 'pos_tid' in chunk.columns:
+        duplicates = chunk[chunk.duplicated(subset=['pos_tid'], keep=False)]
+        if not duplicates.empty:
+            error_info['duplicate_pos_tid'] = duplicates['pos_tid'].tolist()
+    
+    # 取樣錯誤資料（最多5筆）
+    error_info['sample_data'] = chunk.head().to_dict('records')
+    
+    return error_info
+
 try:
-    # 檢查檔案是否存在
     if not os.path.exists(CSV_FILE_PATH):
         print(f"錯誤: 找不到 CSV 檔案 '{CSV_FILE_PATH}'。")
         sys.exit(1)
-
-    # 獲取 CSV 檔案的表頭，以確保 to_sql 時欄位名稱正確
-    # 如果CSV沒有表頭，或者你想手動指定，可以調整
-    # header_df = pd.read_csv(CSV_FILE_PATH, nrows=0)
-    # column_names = header_df.columns.tolist()
-    # print(f"CSV 欄位: {column_names}")
 
     for i, chunk in enumerate(pd.read_csv(CSV_FILE_PATH, chunksize=CHUNK_SIZE, low_memory=False)):
         chunk_start_time = time.time()
         print(f"正在處理第 {i+1} 個區塊...")
 
-        # (可選) 資料清理或轉換
-        # 例如，如果 'date' 欄位是字串，需要轉換成 datetime 物件
+        # 資料清理和轉換
         if 'date' in chunk.columns:
-            try:
-                chunk['date'] = pd.to_datetime(chunk['date'], errors='coerce')
-            except Exception as e:
-                print(f"轉換日期欄位時發生錯誤: {e}")
-                print("繼續處理，但日期欄位可能無法正確轉換...")
+            chunk['date'] = pd.to_datetime(chunk['date'], errors='coerce')
         
-        # 確保 created_time 是整數
-        if 'created_time' in chunk.columns and not pd.api.types.is_numeric_dtype(chunk['created_time']):
-            try:
-                chunk['created_time'] = pd.to_numeric(chunk['created_time'], errors='coerce').fillna(0).astype(int)
-            except Exception as e:
-                print(f"轉換 created_time 欄位時發生錯誤: {e}")
-                print("繼續處理，但 created_time 欄位可能無法正確轉換...")
+        if 'created_time' in chunk.columns:
+            chunk['created_time'] = pd.to_numeric(chunk['created_time'], errors='coerce').fillna(0).astype(int)
+            
+        # 處理 post_type 的空值
+        if 'post_type' in chunk.columns:
+            chunk['post_type'] = chunk['post_type'].fillna('unknown')
+            
+        # 處理 reaction_all 的數值範圍問題
+        if 'reaction_all' in chunk.columns:
+            chunk['reaction_all'] = pd.to_numeric(chunk['reaction_all'], errors='coerce').fillna(0).astype('Int64')  # 使用可空整數類型
 
-        # 將數據寫入 SQL 資料庫
+        # 使用原生 SQL 插入來提高效能
         try:
-            chunk.to_sql(TABLE_NAME, engine, if_exists='append', index=False, method='multi')
+            # 將 DataFrame 轉換為值列表
+            values = chunk.values.tolist()
+            columns = chunk.columns.tolist()
+            
+            # 建立插入語句
+            insert_stmt = f"""
+                INSERT INTO {TABLE_NAME} ({', '.join(columns)})
+                VALUES ({', '.join(['%s'] * len(columns))})
+            """
+
+            '''
+            insert_stmt = f"""
+                INSERT INTO {TABLE_NAME} ({', '.join(columns)})
+                VALUES ({', '.join(['%s'] * len(columns))})
+                ON CONFLICT (pos_tid) DO NOTHING
+            """'''
+            # 使用 psycopg2 直接插入
+            with psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                database=DB_NAME
+            ) as conn:
+                with conn.cursor() as cur:
+                    try:
+                        cur.executemany(insert_stmt, values)
+                        conn.commit()
+                    except psycopg2.Error as db_error:
+                        # 詳細分析資料庫錯誤
+                        error_info = analyze_error_data(chunk, db_error)
+                        error_details.append({
+                            'chunk_number': i + 1,
+                            'error_info': error_info
+                        })
+                        
+                        print(f"\n🔍 區塊 {i+1} 插入失敗，錯誤分析：")
+                        print(f"錯誤類型: {error_info['error_type']}")
+                        print(f"錯誤訊息: {error_info['error_message']}")
+                        
+                        if error_info['duplicate_pos_tid']:
+                            print(f"\n⚠️ 發現重複的 pos_tid: {len(error_info['duplicate_pos_tid'])} 筆")
+                            print("前5筆重複值:", error_info['duplicate_pos_tid'][:5])
+                        
+                        if error_info['null_counts']:
+                            print("\n📊 空值統計:")
+                            for col, count in error_info['null_counts'].items():
+                                if count > 0:
+                                    print(f"  - {col}: {count} 筆空值")
+                        
+                        print("\n📝 資料型別檢查:")
+                        for col, dtype in error_info['data_types'].items():
+                            print(f"  - {col}: {dtype}")
+                        
+                        print("\n🔬 資料樣本（前5筆）:")
+                        for idx, row in enumerate(error_info['sample_data'][:5]):
+                            print(f"\n第 {idx+1} 筆資料:")
+                            for key, value in row.items():
+                                print(f"  {key}: {value}")
+                        
+                        raise  # 重新拋出錯誤以中斷當前區塊的處理
+            
             total_rows_processed += len(chunk)
             chunk_time_taken = time.time() - chunk_start_time
             print(f"第 {i+1} 個區塊 ({len(chunk)} 筆資料) 已處理並插入，耗時 {chunk_time_taken:.2f} 秒。")
             print(f"目前已處理總資料筆數: {total_rows_processed}")
 
         except Exception as e:
-            print(f"⚠️ 將第 {i+1} 個區塊插入資料庫時發生錯誤: {e}")
-            print("➡️ 嘗試逐列偵錯以找出異常資料...")
+            print(f"⚠️ 第 {i+1} 個區塊插入失敗: {e}")
+            # 記錄錯誤的區塊
+            error_rows.extend(chunk.index.tolist())
+            continue
 
-            for row_idx, row in chunk.iterrows():
-                try:
-                    row_df = pd.DataFrame([row])
-                    row_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
-                except Exception as e:
-                    print(f"❌ 第 {i+1} 區塊寫入失敗，錯誤訊息: {e}")
-                    print("➡️ 嘗試逐列偵錯以找出異常資料...")
-
-                    for j, row in chunk.iterrows():
-                        try:
-                            row_df = pd.DataFrame([row])
-                            row_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False, method='multi')
-                        except Exception as row_error:
-                            print(f"❌ 第 {i+1} 區塊中第 {j} 列寫入錯誤: {row_error}")
-                            print("🔍 該筆資料如下：")
-                            print(row)
-
-                            # 欄位逐一偵測
-                            print("🔬 嘗試逐欄位偵錯：")
-                            for col in row.index:
-                                try:
-                                    col_df = pd.DataFrame([{col: row[col]}])
-                                    col_df.to_sql(TABLE_NAME, engine, if_exists='append', index=False)
-                                except Exception as col_error:
-                                    print(f"    🔴 欄位 '{col}' 發生錯誤: {col_error}")
-                    print("------------------------------------------------------------")
-                    continue  # 跳過這個 chunk
-
+    # 處理完成後輸出錯誤統計
+    if error_details:
+        print("\n📊 錯誤統計摘要：")
+        print(f"總共有 {len(error_rows)} 筆資料插入失敗")
+        print(f"發生錯誤的區塊數：{len(error_details)}")
+        
+        # 分析最常見的錯誤類型
+        error_types = {}
+        for detail in error_details:
+            error_type = detail['error_info']['error_type']
+            error_types[error_type] = error_types.get(error_type, 0) + 1
+        
+        print("\n🔍 錯誤類型分布：")
+        for error_type, count in error_types.items():
+            print(f"  - {error_type}: {count} 個區塊")
+        
+        print("\n💡 建議解決方案：")
+        if any('duplicate' in str(detail['error_info']['error_message']).lower() for detail in error_details):
+            print("1. 檢查並移除重複的 pos_tid")
+        if any('null' in str(detail['error_info']['error_message']).lower() for detail in error_details):
+            print("2. 檢查必填欄位的空值")
+        if any('type' in str(detail['error_info']['error_message']).lower() for detail in error_details):
+            print("3. 檢查資料型別是否符合資料表定義")
+    
     end_time = time.time()
-    print(f"成功匯入 {total_rows_processed} 筆資料到 '{TABLE_NAME}'。")
-    print(f"總耗時: {(end_time - start_time):.2f} 秒。")
+    print(f"\n✅ 成功匯入 {total_rows_processed} 筆資料到 '{TABLE_NAME}'")
+    print(f"⏱️ 總耗時: {(end_time - start_time):.2f} 秒")
 
-except FileNotFoundError:
-    print(f"錯誤: 找不到檔案 '{CSV_FILE_PATH}'。")
-    sys.exit(1)
 except Exception as e:
     print(f"發生未預期的錯誤: {e}")
     sys.exit(1)
