@@ -31,25 +31,55 @@ def show_labeling_ui(index):
     row = df.iloc[index]
     st.markdown(f"### 目前第 {index + 1} / {len(df)} 筆")
     st.markdown(f"**pos_tid：** `{row['pos_tid']}`")
-    st.text_area("貼文內容", row["content"], height=150, disabled=True)
+    st.text_area("貼文內容", row["content"], height=400, disabled=False)
 
-    label = st.radio("這是一則詐騙貼文嗎？", ["尚未判斷", "是", "否"], index=0)
-    note = st.text_input("備註（可選）")
+    # 檢查是否為最新進度（尚未標記的題目）
+    is_latest_progress = index == len(df[df['label'].isna() | (df['label'] == '尚未判斷')].index) - 1 if len(df[df['label'].isna() | (df['label'] == '尚未判斷')]) > 0 else False
+    
+    # 顯示當前標記狀態
+    current_label = row.get('label')
+    if pd.isna(current_label) or current_label is None:
+        current_label = '尚未判斷'
+    if current_label != '尚未判斷':
+        st.info(f"當前標記：{current_label}")
 
-    # --- 按鈕 ---
-    col1, col2, col3 = st.columns(3)
+    # 備註欄位
+    note = st.text_input("備註（可選）", value=row.get('note', ''))
+
+    # 按鈕區域
+    col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
-        if st.button("上一題") and st.session_state.label_index > 0:
+        if st.button("⬅️ 上一題", disabled=index == 0):
             st.session_state.label_index -= 1
             st.rerun()
+    
     with col2:
-        if st.button("下一題"):
-            save_label(row["pos_tid"], label, note)
+        if st.button("✅ 是", type="primary"):
+            save_label(row["pos_tid"], "是", note)
+            st.session_state.label_index += 1
+            st.rerun()
+    
+    with col3:
+        if st.button("❌ 否", type="primary"):
+            save_label(row["pos_tid"], "否", note)
+            st.session_state.label_index += 1
+            st.rerun()
+    
+    with col4:
+        if st.button("下一題 ➡️", disabled=is_latest_progress):
             st.session_state.label_index += 1
             st.rerun()
 
+    # 顯示進度
+    total = len(df)
+    labeled = len(df[df['label'].isin(['是', '否'])])
+    st.progress(labeled / total)
+    st.caption(f"已完成：{labeled}/{total} 題")
+
 # --- 儲存標記結果 ---
 def save_label(pos_tid, label, note):
+    global df  # 需要修改全域變數
     update_sql = """
         UPDATE candidates
         SET label = :label, note = :note
@@ -57,6 +87,10 @@ def save_label(pos_tid, label, note):
     """
     with engine.begin() as conn:
         conn.execute(text(update_sql), {"label": label, "note": note, "pos_tid": pos_tid})
+    
+    # 更新本地 DataFrame
+    df.loc[df['pos_tid'] == pos_tid, 'label'] = label
+    df.loc[df['pos_tid'] == pos_tid, 'note'] = note
 
 # --- 確保有 label/note 欄位 ---
 with engine.begin() as conn:

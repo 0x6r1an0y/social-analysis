@@ -36,6 +36,7 @@ df = pd.read_sql_query(text(sql), source_engine)
 df["group_id"] = pd.Series(range(len(df))) % 5  # 輪流分配 group_id 為 0~4
 
 # 2. 存到另一個 DB 的新表格中
+
 df.to_sql("candidates", target_engine, if_exists="replace", index=False)
 
 print("✅ 已複製 4000 筆資料到 labeling_db.candidates")
