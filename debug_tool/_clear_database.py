@@ -6,7 +6,7 @@ DB_USER = "postgres"        # 資料庫使用者名稱
 DB_PASSWORD = "00000000"    # 資料庫密碼
 DB_HOST = "localhost"       # 資料庫主機
 DB_PORT = "5432"            # 資料庫埠號
-# DB_NAME = "social_media_analysis" # 資料庫名稱
+#DB_NAME = "social_media_analysis" # 資料庫名稱
 DB_NAME = "labeling_db" # 資料庫名稱
 
 def clear_database():

@@ -17,7 +17,7 @@ TABLE_NAME = "posts"             # 你要創建的資料表名稱
 
 # --- 2. 設定 CSV 檔案路徑和分塊大小 ---
 CSV_FILE_PATH = "cleaned_output.csv"
-CHUNK_SIZE = 10  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
+CHUNK_SIZE = 100000  # 每次處理的行數，可根據你的記憶體大小調整 (例如 10,000 到 100,000)
 
 # --- 3. 檢查並創建資料庫 ---
 try:
@@ -223,8 +223,8 @@ try:
             
             total_rows_processed += len(chunk)
             chunk_time_taken = time.time() - chunk_start_time
-            print(f"第 {i+1} 個區塊 ({len(chunk)} 筆資料) 已處理並插入，耗時 {chunk_time_taken:.2f} 秒。")
-            print(f"目前已處理總資料筆數: {total_rows_processed}")
+            print(f"====第 {i+1} 個區塊 ({len(chunk)} 筆資料) 已處理並插入，耗時 {chunk_time_taken:.2f} 秒。====")
+            #print(f"目前已處理總資料筆數: {total_rows_processed}")
 
         except Exception as e:
             print(f"⚠️ 第 {i+1} 個區塊插入失敗: {e}")
