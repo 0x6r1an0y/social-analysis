@@ -3,6 +3,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
+pick_number = 4000
+
 # check 資料庫存在
 def create_db_if_not_exists(dbname):
     conn = psycopg2.connect(dbname='postgres', user='postgres', password='00000000', host='localhost')
@@ -26,20 +28,22 @@ source_engine = create_engine("postgresql+psycopg2://postgres:00000000@localhost
 # 目標資料庫（標記用 DB）
 target_engine = create_engine("postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db")
 
-# 1. 撈出 4000 筆疑似詐騙貼文
+# 1. 撈出 pick_number 筆疑似詐騙貼文
 keywords = ['穩賺', '借貸', '老師帶你賺', '量化交易', '虛擬貨幣', '急用', '輕鬆', '投資']
 where_clause = " OR ".join([f"content ILIKE '%{kw}%'" for kw in keywords])
-sql = f"SELECT pos_tid, content FROM posts WHERE {where_clause} LIMIT 4000"
+sql = f"SELECT pos_tid, content FROM posts WHERE {where_clause} LIMIT {pick_number}"
 
 df = pd.read_sql_query(text(sql), source_engine)
 
 df["group_id"] = pd.Series(range(len(df))) % 5  # 輪流分配 group_id 為 0~4
+df["label"] = None # 加上缺的欄位
+df["note"] = None # 加上缺的欄位
 
 # 2. 存到另一個 DB 的新表格中
-
 df.to_sql("candidates", target_engine, if_exists="replace", index=False)
 
-print("✅ 已複製 4000 筆資料到 labeling_db.candidates")
+
+print(f"✅ 已複製 {pick_number} 筆資料到 labeling_db.candidates")
 
 
 
