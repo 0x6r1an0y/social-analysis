@@ -1,1 +1,1 @@
-python candidates_label_server.py
+streamlit run candidates_label_server.py
