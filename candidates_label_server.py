@@ -94,7 +94,7 @@ def show_labeling_ui(index, group_id):
     # 手動跳轉題號
     st.markdown("---")
     st.markdown("**跳轉到第幾題**")
-    col_nav1, col_nav2 = st.columns([3, 1])
+    col_nav1, col_nav2, col_nav3 = st.columns([2, 1, 2])
     with col_nav1:
         target_question = st.number_input(
             "", 
@@ -108,6 +108,15 @@ def show_labeling_ui(index, group_id):
         if st.button("🎯 跳轉", type="secondary"):
             st.session_state.label_index = target_question - 1
             st.rerun()
+    with col_nav3:
+        if st.button("📍 移動到未完成的題目", type="secondary"):
+            unlabeled_mask = df['label'].isna() | (df['label'] == '尚未判斷') | (df['label'] == '') | df['label'].isnull()
+            unlabeled_indices = df[unlabeled_mask].index.tolist()
+            if unlabeled_indices:
+                st.session_state.label_index = min(unlabeled_indices)
+                st.rerun()
+            else:
+                st.info("所有題目都已完成！")
 
     # 按鈕區域
     col1, col2, col3, col4 = st.columns(4)
