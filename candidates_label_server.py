@@ -16,14 +16,21 @@ def load_data_from_db(group_id):
 
 def get_current_data(group_id):
     """智慧取得當前資料"""
+    
     # 如果群組改變，強制重新載入並重置題號
     if st.session_state.current_group != group_id:
         st.session_state.current_group = group_id
         st.session_state.need_update = False
         st.session_state.label_index = 0  # 重置題號為0 (第1題)
         load_data_from_db.clear()  # 清除舊群組的快取
-        print(f"🔄 切換到群組 {group_id}，題號重置為 1")
-        return load_data_from_db(group_id)
+        # 載入新群組資料
+        db = load_data_from_db(group_id)
+        # 計算並設置到最新進度
+        latest_index = get_latest_progress(db)
+        st.session_state.label_index = latest_index
+        print(f"🔄 切換到群組 {group_id}，題號導向到 {latest_index}")
+        st.success(f"已恢復進度到第{latest_index+1}題")
+        return db
     
     # 檢查是否為導航動作且需要更新
     is_navigation = st.session_state.get('just_navigated', False)
@@ -49,7 +56,7 @@ def save_label_only(pos_tid, label, note, group_id):
         SET label = :label, note = :note
         WHERE pos_tid = :pos_tid
     """
-    print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id}")
+    print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index}題")
     
     with engine.begin() as conn:
         result = conn.execute(text(update_sql), {"label": label, "note": note, "pos_tid": pos_tid})
@@ -83,6 +90,24 @@ def show_labeling_ui(index, group_id):
 
     # 備註欄位
     note = st.text_input("備註（可選）", value=row.get('note', ''))
+
+    # 手動跳轉題號
+    st.markdown("---")
+    st.markdown("**跳轉到第幾題**")
+    col_nav1, col_nav2 = st.columns([3, 1])
+    with col_nav1:
+        target_question = st.number_input(
+            "", 
+            min_value=1, 
+            max_value=len(df), 
+            value=index + 1,
+            key="jump_to_question",
+            label_visibility="collapsed"
+        )
+    with col_nav2:
+        if st.button("🎯 跳轉", type="secondary"):
+            st.session_state.label_index = target_question - 1
+            st.rerun()
 
     # 按鈕區域
     col1, col2, col3, col4 = st.columns(4)
@@ -122,6 +147,19 @@ def show_labeling_ui(index, group_id):
         st.success("🎉 本組貼文已全部標記完畢！")
     st.progress(labeled / total)
     st.caption(f"已完成：{labeled}/{total} 題")
+
+def get_latest_progress(df):
+    """計算當前最新進度（下一個未標記的題目索引）"""
+    # 找出所有未標記的題目
+    unlabeled_mask = df['label'].isna() | (df['label'] == '尚未判斷') | (df['label'] == '') | df['label'].isnull()
+    unlabeled_indices = df[unlabeled_mask].index.tolist()
+    
+    if unlabeled_indices:
+        # 回傳第一個未標記題目的索引
+        return unlabeled_indices[0]
+    else:
+        # 全部標記完畢，回傳最後一題
+        return len(df) - 1
 
 #======================================================================================
 
