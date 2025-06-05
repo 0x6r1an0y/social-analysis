@@ -49,7 +49,7 @@ def get_current_data(group_id):
     return load_data_from_db(group_id)
 
 # --- 儲存標記結果（只更新資料庫） ---
-def save_label_only(pos_tid, label, note, group_id):
+def save_label_only(pos_tid:str, label:str, note:str, group_id):
     """只儲存到資料庫，不重新載入資料"""
     update_sql = """
         UPDATE candidates
@@ -97,7 +97,7 @@ def show_labeling_ui(index, group_id):
     col_nav1, col_nav2, col_nav3 = st.columns([2, 1, 2])
     with col_nav1:
         target_question = st.number_input(
-            "", 
+            "編號", 
             min_value=1, 
             max_value=len(df), 
             value=index + 1,
