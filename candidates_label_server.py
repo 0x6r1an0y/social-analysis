@@ -28,7 +28,7 @@ def get_current_data(group_id):
         # 計算並設置到最新進度
         latest_index = get_latest_progress(db)
         st.session_state.label_index = latest_index
-        print(f"🔄 切換到群組 {group_id}，題號導向到 {latest_index}")
+        print(f"🔄 切換到群組 {group_id}，題號導向到第{latest_index+1}題")
         st.success(f"已恢復進度到第{latest_index+1}題")
         return db
     
