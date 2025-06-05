@@ -97,7 +97,7 @@ def show_labeling_ui(index, group_id):
     col_nav1, col_nav2, col_nav3 = st.columns([2, 1, 2])
     with col_nav1:
         target_question = st.number_input(
-            "編號", 
+            "題目編號", 
             min_value=1, 
             max_value=len(df), 
             value=index + 1,
@@ -130,17 +130,11 @@ def show_labeling_ui(index, group_id):
     with col2:
         if st.button("✅ 是", type="secondary"):
             save_label_only(row["pos_tid"], "是", note, group_id)
-            # 防止超出範圍
-            if st.session_state.label_index < len(df) - 1:
-                st.session_state.label_index += 1
             st.rerun()
     
     with col3:
         if st.button("❌ 否", type="secondary"):
             save_label_only(row["pos_tid"], "否", note, group_id)
-            # 防止超出範圍
-            if st.session_state.label_index < len(df) - 1:
-                st.session_state.label_index += 1
             st.rerun()
     
     with col4:
