@@ -9,13 +9,13 @@ engine = create_engine(DB_URL)
 
 # --- 載入資料的函數（帶快取） ---
 @st.cache_data
-def load_data_from_db(group_id):
+def load_data_from_db(group_id: int) -> pd.DataFrame:
     """從sql載入該group的data"""
     query = f"SELECT * FROM candidates WHERE group_id = {group_id}"
     print(f"🔄 載入群組 {group_id} 的sql資料")
     return pd.read_sql(query, engine)
 
-def get_current_data(group_id):
+def get_current_data(group_id: int) -> pd.DataFrame:
     """智慧取得當前資料"""
     
     # 如果群組改變，強制重新載入並重置題號
@@ -52,7 +52,7 @@ def get_current_data(group_id):
     return load_data_from_db(group_id)
 
 # --- 儲存標記結果（只更新資料庫） ---
-def save_label_only(pos_tid:str, label:str, note:str, group_id):
+def save_label_only(pos_tid: str, label: str, note: str, group_id: int) -> None:
     """只儲存到資料庫，不重新載入資料"""
     update_sql = """
         UPDATE candidates
@@ -70,7 +70,7 @@ def save_label_only(pos_tid:str, label:str, note:str, group_id):
     st.session_state.need_update = True
 
 # --- 顯示一筆貼文進行標記 ---
-def show_labeling_ui(group_id):
+def show_labeling_ui(group_id: int) -> None:
     index = st.session_state.label_index
     row = df.iloc[index]
     st.markdown(f"### 目前第 {index + 1} / {len(df)} 筆")
@@ -157,7 +157,7 @@ def show_labeling_ui(group_id):
     st.progress(labeled / total)
     st.caption(f"已完成：{labeled}/{total} 題")
 
-def get_latest_progress(df):
+def get_latest_progress(df: pd.DataFrame) -> int:
     """計算當前最新進度（下一個未標記的題目索引）"""
     # 找出所有未標記的題目
     unlabeled_mask = df['label'].isna() | (df['label'] == '尚未判斷') | (df['label'] == '') | df['label'].isnull()
@@ -170,7 +170,7 @@ def get_latest_progress(df):
         # 全部標記完畢，回傳最後一題
         return len(df) - 1
 
-def show_scam_posts_view():
+def show_scam_posts_view() -> None:
     """顯示所有被標記為詐騙的貼文"""
     st.markdown("### 📱 詐騙貼文瀏覽")
     
@@ -208,7 +208,7 @@ def show_scam_posts_view():
                 if pd.notna(post['note']) and post['note']:
                     st.caption(f"備註：{post['note']}")
 
-def show_post_search():
+def show_post_search() -> None:
     """根據 pos_tid 查詢特定貼文"""
     st.markdown("### 🔍 貼文查詢")
     
