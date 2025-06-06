@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
+from datetime import datetime
 
 # 設定資料庫連線（標記資料）
 DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
@@ -39,7 +40,9 @@ def get_current_data(group_id):
         load_data_from_db.clear()  # 清除快取
         st.session_state.need_update = False
         st.session_state.just_navigated = False
-        return load_data_from_db(group_id)
+        db = load_data_from_db(group_id)
+        #st.rerun()
+        return db
     
     # 重置導航標記
     if st.session_state.get('just_navigated', False):
@@ -56,7 +59,7 @@ def save_label_only(pos_tid:str, label:str, note:str, group_id):
         SET label = :label, note = :note
         WHERE pos_tid = :pos_tid
     """
-    print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index}題")
+    print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index+1}題")
     
     with engine.begin() as conn:
         result = conn.execute(text(update_sql), {"label": label, "note": note, "pos_tid": pos_tid})
@@ -67,16 +70,13 @@ def save_label_only(pos_tid:str, label:str, note:str, group_id):
     st.session_state.need_update = True
 
 # --- 顯示一筆貼文進行標記 ---
-def show_labeling_ui(index, group_id):
-
+def show_labeling_ui(group_id):
+    index = st.session_state.label_index
     row = df.iloc[index]
     st.markdown(f"### 目前第 {index + 1} / {len(df)} 筆")
     st.markdown(f"**pos_tid：** `{row['pos_tid']}`")
     st.text_area("貼文內容", row["content"], height=400, disabled=False)
 
-    # 檢查是否為最新進度（尚未標記的題目）
-    is_latest_progress = index == len(df[df['label'].isna() | (df['label'] == '尚未判斷')].index) - 1 if len(df[df['label'].isna() | (df['label'] == '尚未判斷')]) > 0 else False
-    
     # 顯示當前標記狀態
     current_label = row.get('label')
     if pd.isna(current_label) or current_label is None:
@@ -97,7 +97,7 @@ def show_labeling_ui(index, group_id):
     col_nav1, col_nav2, col_nav3 = st.columns([2, 1, 2])
     with col_nav1:
         target_question = st.number_input(
-            "題目編號", 
+            "編號", 
             min_value=1, 
             max_value=len(df), 
             value=index + 1,
@@ -122,25 +122,31 @@ def show_labeling_ui(index, group_id):
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if st.button("⬅️ 上一題", disabled=index == 0):
+        if st.button("⬅️ 上一題", disabled = index<=0):
             st.session_state.just_navigated = True
-            st.session_state.label_index = max(0, st.session_state.label_index - 1)
+            st.session_state.label_index -= 1
             st.rerun()
     
     with col2:
-        if st.button("✅ 是", type="secondary"):
+        if st.button("✅ 是", type="secondary", disabled=(index == len(df))):
             save_label_only(row["pos_tid"], "是", note, group_id)
+            # 防止超出範圍
+            if not index >= (len(df) - 1): # if index < 799:
+                st.session_state.label_index += 1
             st.rerun()
     
     with col3:
-        if st.button("❌ 否", type="secondary"):
+        if st.button("❌ 否", type="secondary", disabled=(index == len(df))):
             save_label_only(row["pos_tid"], "否", note, group_id)
+            # 防止超出範圍
+            if not index >= (len(df) - 1):
+                st.session_state.label_index += 1
             st.rerun()
     
     with col4:
-        if st.button("下一題 ➡️", disabled=index >= len(df) - 1):
+        if st.button("下一題 ➡️", disabled = index >= (len(df) - 1)):
             st.session_state.just_navigated = True
-            st.session_state.label_index = min(len(df) - 1, st.session_state.label_index + 1)
+            st.session_state.label_index += 1
             st.rerun()
 
     # 顯示進度
@@ -164,31 +170,119 @@ def get_latest_progress(df):
         # 全部標記完畢，回傳最後一題
         return len(df) - 1
 
+def show_scam_posts_view():
+    """顯示所有被標記為詐騙的貼文"""
+    st.markdown("### 📱 詐騙貼文瀏覽")
+    
+    # 取得所有被標記為詐騙的貼文
+    query = """
+        SELECT pos_tid, content, label, note, group_id
+        FROM candidates 
+        WHERE label = '是'
+        ORDER BY pos_tid DESC
+    """
+    scam_posts = pd.read_sql(query, engine)
+    
+    if len(scam_posts) == 0:
+        st.info("目前還沒有被標記為詐騙的貼文")
+        return
+    
+    # 顯示貼文數量
+    st.caption(f"共找到 {len(scam_posts)} 則詐騙貼文")
+    
+    # 顯示每則貼文
+    for _, post in scam_posts.iterrows():
+        with st.container():
+            st.markdown("---")
+            # 貼文標題
+            st.markdown(f"**貼文 ID：** `{post['pos_tid']}`")
+            # 貼文內容
+            #st.markdown(post['content'])
+            # 貼文內容（改為純文字顯示）
+            st.text_area("貼文內容", post['content'], height=200, disabled=True, label_visibility="collapsed", key=f"scam_posts_{post['pos_tid']}")
+            # 貼文資訊
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"群組：{post['group_id']}")
+            with col2:
+                if pd.notna(post['note']) and post['note']:
+                    st.caption(f"備註：{post['note']}")
+
+def show_post_search():
+    """根據 pos_tid 查詢特定貼文"""
+    st.markdown("### 🔍 貼文查詢")
+    
+    # 搜尋輸入框
+    pos_tid = st.text_input("請輸入貼文 ID (pos_tid)")
+    
+    if pos_tid:
+        # 查詢貼文
+        query = """
+            SELECT pos_tid, content, label, note, group_id
+            FROM candidates 
+            WHERE pos_tid = :pos_tid
+        """
+        result = pd.read_sql(text(query), engine, params={"pos_tid": pos_tid})
+        
+        if len(result) == 0:
+            st.warning(f"找不到 ID 為 {pos_tid} 的貼文")
+            return
+        
+        post = result.iloc[0]
+        
+        # 顯示貼文內容
+        st.markdown("---")
+        st.markdown(f"**貼文 ID：** `{post['pos_tid']}`")
+        # 貼文內容（改為純文字顯示）
+        st.text_area("貼文內容", post['content'], height=200, disabled=True, label_visibility="collapsed", key=f"scam_posts_search_{post['pos_tid']}")
+        
+        # 貼文資訊
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption(f"群組：{post['group_id']}")
+            if pd.notna(post['label']):
+                st.caption(f"標記：{post['label']}")
+        with col2:
+            if pd.notna(post['note']) and post['note']:
+                st.caption(f"備註：{post['note']}")
+
 #======================================================================================
 
 if __name__ == '__main__':
-
-    # --- UI：選擇群組 ---
     st.title("詐騙貼文人工標記工具")
-    group_id = st.selectbox("請選擇你的群組編號", list(range(5)))  # 假設 group_id 0~4
-
-    # --- 初始化 session state ---
-    if 'label_index' not in st.session_state:
-        st.session_state.label_index = 0
-
-    if 'need_update' not in st.session_state:
-        st.session_state.need_update = False
-
-    if 'current_group' not in st.session_state:
-        st.session_state.current_group = None
-
-    # --- 取得資料 ---
-    df = get_current_data(group_id)
-
-    # --- 確保有 label/note 欄位 ---
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS label TEXT"))
-        conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS note TEXT"))
-
-    # --- 啟動 UI ---
-    show_labeling_ui(st.session_state.label_index, group_id)
+    
+    # 建立頁籤
+    tab1, tab2 = st.tabs(["📝 標記模式", "🔍 瀏覽模式"])
+    
+    with tab1:
+        # 原有的標記功能
+        group_id = st.selectbox("請選擇你的群組編號", list(range(5)))
+        
+        # --- 初始化 session state ---
+        if 'label_index' not in st.session_state:
+            st.session_state.label_index = 0
+        if 'need_update' not in st.session_state:
+            st.session_state.need_update = False
+        if 'current_group' not in st.session_state:
+            st.session_state.current_group = None
+        
+        # --- 取得資料 ---
+        df = get_current_data(group_id)
+        
+        # --- 確保有 label/note 欄位 ---
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS label TEXT"))
+            conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS note TEXT"))
+        
+        # --- 啟動標記 UI ---
+        show_labeling_ui(group_id)
+    
+    with tab2:
+        # 瀏覽模式的子頁籤
+        subtab1, subtab2 = st.tabs(["📱 詐騙貼文瀏覽", "🔍 貼文查詢"])
+        
+        with subtab1:
+            show_scam_posts_view()
+        
+        with subtab2:
+            show_post_search()
