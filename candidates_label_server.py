@@ -8,6 +8,14 @@ from candidates_dataloader_to_sql import fetch_candidate_posts
 DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
 engine = create_engine(DB_URL)
 
+# --- 獲取所有群組編號 ---
+@st.cache_data
+def get_all_group_ids() -> list:
+    """從資料庫獲取所有不重複的群組編號"""
+    query = "SELECT DISTINCT group_id FROM candidates ORDER BY group_id"
+    result = pd.read_sql(query, engine)
+    return result['group_id'].tolist()
+
 # --- 載入資料的函數（帶快取） ---
 @st.cache_data
 def load_data_from_db(group_id: int) -> pd.DataFrame:
@@ -60,7 +68,10 @@ def save_label_only(pos_tid: str, label: str, note: str, group_id: int) -> None:
         SET label = :label, note = :note
         WHERE pos_tid = :pos_tid
     """
-    print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index+1}題")
+    if group_id != 999:
+        print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index+1}題")
+    else:
+        print(f"💾 從關鍵字搜尋儲存標記：{pos_tid} -> {label} from group {group_id}")
     
     with engine.begin() as conn:
         result = conn.execute(text(update_sql), {"label": label, "note": note, "pos_tid": pos_tid})
@@ -306,9 +317,20 @@ def show_post_search() -> None:
 def show_keyword_search() -> None:
     """顯示關鍵字搜尋模式的介面"""
     
+    # 初始化分頁相關的 session state
+    if 'search_page' not in st.session_state:
+        st.session_state.search_page = 0
+    if 'search_results' not in st.session_state:
+        st.session_state.search_results = None
+    if 'search_keywords' not in st.session_state:
+        st.session_state.search_keywords = None
+    if 'search_logic' not in st.session_state:
+        st.session_state.search_logic = None
+    
     # 關鍵字輸入區域
     keywords_input = st.text_area(
         "請輸入關鍵字（每行一個）",
+        value="\n".join(st.session_state.search_keywords) if st.session_state.search_keywords else "",
         help="每行輸入一個關鍵字，系統會根據選擇的邏輯進行搜尋"
     )
     
@@ -319,6 +341,7 @@ def show_keyword_search() -> None:
     search_logic = st.radio(
         "搜尋邏輯",
         options=["OR", "AND"],
+        index=0 if st.session_state.search_logic != "AND" else 1,
         help="OR：符合任一關鍵字即顯示\nAND：必須符合所有關鍵字才顯示"
     )
     
@@ -332,47 +355,81 @@ def show_keyword_search() -> None:
             results_df = fetch_candidate_posts(
                 source_engine=source_engine,
                 keywords=keywords,
-                limit=20,
+                limit=1000,  # 先取得較多結果，但分頁顯示
                 group_count=1,  # 搜尋模式下不需要分組
                 search_logic=search_logic
             )
             
             if len(results_df) == 0:
                 st.warning("沒有找到符合條件的貼文")
+                st.session_state.search_results = None
+                st.session_state.search_page = 0
                 return
             
-            # 顯示搜尋結果數量
-            st.success(f"找到 {len(results_df)} 則符合條件的貼文")
+            # 儲存搜尋結果和參數到 session state
+            st.session_state.search_results = results_df
+            st.session_state.search_keywords = keywords
+            st.session_state.search_logic = search_logic
+            st.session_state.search_page = 0  # 重置頁碼
             
-            # 顯示搜尋結果
-            for idx, row in results_df.iterrows():
-                with st.container():
-                    st.markdown("---")
-                    # 貼文標題
-                    st.markdown(f"**貼文 ID：** `{row['pos_tid']}`")
-                    # 貼文內容
-                    st.text_area("貼文內容", row['content'], height=200, disabled=True, label_visibility="collapsed", key=f"keyword_search_{row['pos_tid']}")
-                    
-                    # 標記區域
-                    col1, col2, col3 = st.columns([1, 1, 2])
-                    with col1:
-                        if st.button("✅ 是", key=f"yes_{row['pos_tid']}"):
-                            save_label_only(row['pos_tid'], "是", "", 0)  # 使用 group_id=0 作為搜尋結果的群組
-                            st.success("已標記為「是」")
-                            st.rerun()
-                    with col2:
-                        if st.button("❌ 否", key=f"no_{row['pos_tid']}"):
-                            save_label_only(row['pos_tid'], "否", "", 0)  # 使用 group_id=0 作為搜尋結果的群組
-                            st.success("已標記為「否」")
-                            st.rerun()
-                    with col3:
-                        # 顯示當前標記狀態
-                        current_label = row.get('label')
-                        if pd.notna(current_label) and current_label:
-                            st.info(f"當前標記：{current_label}")
+            st.success(f"找到 {len(results_df)} 則符合條件的貼文")
+            st.rerun()
             
         except Exception as e:
             st.error(f"搜尋時發生錯誤：{str(e)}")
+    
+    # 如果有搜尋結果，顯示分頁內容
+    if st.session_state.search_results is not None:
+        df = st.session_state.search_results
+        total_pages = (len(df) + 19) // 20  # 向上取整，計算總頁數
+        
+        # 顯示分頁資訊
+        st.markdown(f"---\n#### 搜尋結果（第 {st.session_state.search_page + 1} 頁，共 {total_pages} 頁）")
+        
+        # 計算當前頁的資料範圍
+        start_idx = st.session_state.search_page * 20
+        end_idx = min(start_idx + 20, len(df))
+        
+        # 顯示當前頁的資料
+        for idx in range(start_idx, end_idx):
+            row = df.iloc[idx]
+            with st.container():
+                st.markdown("---")
+                # 貼文標題
+                st.markdown(f"**貼文 ID：** `{row['pos_tid']}`")
+                # 貼文內容
+                st.text_area("貼文內容", row['content'], height=200, disabled=True, label_visibility="collapsed", key=f"keyword_search_{row['pos_tid']}")
+                
+                # 標記區域
+                col1, col2, col3 = st.columns([1, 1, 2])
+                with col1:
+                    if st.button("✅ 是", key=f"yes_{row['pos_tid']}"):
+                        save_label_only(row['pos_tid'], "是", "", 999)
+                        st.success("已標記為「是」")
+                        st.rerun()
+                with col2:
+                    if st.button("❌ 否", key=f"no_{row['pos_tid']}"):
+                        save_label_only(row['pos_tid'], "否", "", 999)
+                        st.success("已標記為「否」")
+                        st.rerun()
+                with col3:
+                    # 顯示當前標記狀態
+                    current_label = row.get('label')
+                    if pd.notna(current_label) and current_label:
+                        st.info(f"當前標記：{current_label}")
+        
+        # 分頁導航按鈕
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col1:
+            if st.button("⬅️ 上一頁", disabled=st.session_state.search_page <= 0):
+                st.session_state.search_page -= 1
+                st.rerun()
+        with col2:
+            st.markdown(f"<div style='text-align: center'>第 {st.session_state.search_page + 1} 頁，共 {total_pages} 頁</div>", unsafe_allow_html=True)
+        with col3:
+            if st.button("下一頁 ➡️", disabled=st.session_state.search_page >= total_pages - 1):
+                st.session_state.search_page += 1
+                st.rerun()
 
 #======================================================================================
 
@@ -383,8 +440,9 @@ if __name__ == '__main__':
     tab1, tab2, tab3 = st.tabs(["📝 標記模式", "👀 瀏覽模式", "🔎 關鍵字搜尋"])
     
     with tab1:
-        # 原有的標記功能
-        group_id = st.selectbox("請選擇你的群組編號", list(range(5)))
+        # 動態獲取群組編號
+        group_ids = get_all_group_ids()
+        group_id = st.selectbox("請選擇你的群組編號", group_ids)
         
         # --- 初始化 session state ---
         if 'label_index' not in st.session_state:
