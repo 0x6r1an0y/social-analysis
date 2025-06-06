@@ -70,7 +70,7 @@ def get_data_by_pos_tid_pandas(pos_tid_value, table_name="your_table_name"):
 if __name__ == "__main__":
     # 替換成你的實際表名和要查詢的 pos_tid
     table_name = "candidates"  # 請替換成實際的表名
-    target_pos_tid = "1270400279652767_5620650421294376"  # 請替換成要查詢的 pos_tid 值
+    target_pos_tid = "763099540467049_3512500108860298"  # 請替換成要查詢的 pos_tid 值
     
     # 方法1: 使用字典格式
     print("=== 使用字典格式查詢 ===")
