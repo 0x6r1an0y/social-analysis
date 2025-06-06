@@ -210,7 +210,17 @@ def show_scam_posts_view() -> None:
 
 def show_post_search() -> None:
     """根據 pos_tid 查詢特定貼文"""
-    st.markdown("### 🔍 貼文查詢")
+    st.markdown("### 🔍貼文查詢")
+    
+    # 初始化編輯狀態
+    if 'has_unsaved_changes' not in st.session_state:
+        st.session_state.has_unsaved_changes = False
+    if 'edited_label' not in st.session_state:
+        st.session_state.edited_label = None
+    if 'edited_note' not in st.session_state:
+        st.session_state.edited_note = None
+    if 'current_post_id' not in st.session_state:
+        st.session_state.current_post_id = None
     
     # 搜尋輸入框
     pos_tid = st.text_input("請輸入貼文 ID (pos_tid)")
@@ -230,21 +240,67 @@ def show_post_search() -> None:
         
         post = result.iloc[0]
         
+        # 如果是新貼文，重置編輯狀態
+        if st.session_state.current_post_id != pos_tid:
+            st.session_state.current_post_id = pos_tid
+            st.session_state.has_unsaved_changes = False
+            st.session_state.edited_label = post['label']
+            st.session_state.edited_note = post['note']
+        
         # 顯示貼文內容
         st.markdown("---")
         st.markdown(f"**貼文 ID：** `{post['pos_tid']}`")
         # 貼文內容（改為純文字顯示）
         st.text_area("貼文內容", post['content'], height=200, disabled=True, label_visibility="collapsed", key=f"scam_posts_search_{post['pos_tid']}")
         
-        # 貼文資訊
+        # 編輯區域
+        st.markdown("### 編輯標記")
         col1, col2 = st.columns(2)
+        
         with col1:
             st.caption(f"群組：{post['group_id']}")
-            if pd.notna(post['label']):
-                st.caption(f"標記：{post['label']}")
+            # 標記選擇
+            new_label = st.radio(
+                "標記",
+                options=["是", "否", "尚未判斷"],
+                index=["是", "否", "尚未判斷"].index(st.session_state.edited_label if st.session_state.edited_label else "尚未判斷"),
+                key=f"label_edit_{post['pos_tid']}"
+            )
+            # 只有當實際值改變時才標記為未存檔
+            if new_label != post['label']:
+                st.session_state.edited_label = new_label
+                st.session_state.has_unsaved_changes = True
+            elif new_label == post['label'] and st.session_state.edited_label != post['label']:
+                st.session_state.edited_label = new_label
+                st.session_state.has_unsaved_changes = False
+        
         with col2:
-            if pd.notna(post['note']) and post['note']:
-                st.caption(f"備註：{post['note']}")
+            # 備註編輯
+            new_note = st.text_area(
+                "備註",
+                value=st.session_state.edited_note if pd.notna(st.session_state.edited_note) else "",
+                key=f"note_edit_{post['pos_tid']}"
+            )
+            # 只有當實際值改變時才標記為未存檔
+            if new_note != (post['note'] if pd.notna(post['note']) else ""):
+                st.session_state.edited_note = new_note
+                st.session_state.has_unsaved_changes = True
+            elif new_note == (post['note'] if pd.notna(post['note']) else "") and st.session_state.edited_note != post['note']:
+                st.session_state.edited_note = new_note
+                st.session_state.has_unsaved_changes = False
+        
+        # 存檔按鈕
+        col_save1, col_save2 = st.columns([1, 3])
+        with col_save1:
+            if st.button("💾 儲存更改", type="primary", disabled=not st.session_state.has_unsaved_changes):
+                save_label_only(post['pos_tid'], st.session_state.edited_label, st.session_state.edited_note, post['group_id'])
+                st.session_state.has_unsaved_changes = False
+                st.success("✅ 已儲存更改")
+                st.rerun()
+        
+        # 顯示未存檔提醒
+        if st.session_state.has_unsaved_changes:
+            st.warning("⚠️ 您有未存檔的更改！")
 
 #======================================================================================
 
