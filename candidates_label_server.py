@@ -5,15 +5,19 @@ from datetime import datetime
 from candidates_dataloader_to_sql import fetch_candidate_posts
 
 # 設定資料庫連線（標記資料）
-DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
-engine = create_engine(DB_URL)
+LABELING_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
+SOURCE_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
+
+# 建立兩個資料庫的連線引擎
+labeling_engine = create_engine(LABELING_DB_URL)
+source_engine = create_engine(SOURCE_DB_URL)
 
 # --- 獲取所有群組編號 ---
 @st.cache_data
 def get_all_group_ids() -> list:
     """從資料庫獲取所有不重複的群組編號"""
     query = "SELECT DISTINCT group_id FROM candidates ORDER BY group_id"
-    result = pd.read_sql(query, engine)
+    result = pd.read_sql(query, labeling_engine)
     return result['group_id'].tolist()
 
 # --- 載入資料的函數（帶快取） ---
@@ -22,7 +26,7 @@ def load_data_from_db(group_id: int) -> pd.DataFrame:
     """從sql載入該group的data"""
     query = f"SELECT * FROM candidates WHERE group_id = {group_id}"
     print(f"🔄 載入群組 {group_id} 的sql資料")
-    return pd.read_sql(query, engine)
+    return pd.read_sql(query, labeling_engine)
 
 def get_current_data(group_id: int) -> pd.DataFrame:
     """智慧取得當前資料"""
@@ -62,21 +66,63 @@ def get_current_data(group_id: int) -> pd.DataFrame:
 
 # --- 儲存標記結果（只更新資料庫） ---
 def save_label_only(pos_tid: str, label: str, note: str, group_id: int) -> None:
-    """只儲存到資料庫，不重新載入資料"""
-    update_sql = """
-        UPDATE candidates
-        SET label = :label, note = :note
-        WHERE pos_tid = :pos_tid
-    """
+    """儲存到資料庫，如果是關鍵字搜尋的結果(group_id=999)且不存在則新增記錄"""
+    # 先檢查貼文是否存在
+    check_sql = "SELECT COUNT(*) FROM candidates WHERE pos_tid = :pos_tid"
+    
+    with labeling_engine.begin() as conn:
+        result = conn.execute(text(check_sql), {"pos_tid": pos_tid})
+        exists = result.scalar() > 0
+        
+        if group_id == 999 and not exists:
+            # 如果是關鍵字搜尋且貼文不存在，則從原始資料庫獲取內容並新增記錄
+            try:
+                # 先從原始資料庫獲取貼文內容
+                source_query = "SELECT pos_tid, content FROM posts WHERE pos_tid = :pos_tid"
+                with source_engine.connect() as source_conn:
+                    source_result = source_conn.execute(text(source_query), {"pos_tid": pos_tid})
+                    post_data = source_result.fetchone()
+                    
+                    if post_data is None:
+                        st.error(f"在原始資料庫中找不到貼文：{pos_tid}")
+                        return
+                    
+                    # 插入到標記資料庫
+                    insert_sql = """
+                        INSERT INTO candidates (pos_tid, content, group_id, label, note)
+                        VALUES (:pos_tid, :content, :group_id, :label, :note)
+                    """
+                    conn.execute(text(insert_sql), {
+                        "pos_tid": pos_tid,
+                        "content": post_data.content,
+                        "group_id": group_id,
+                        "label": label,
+                        "note": note
+                    })
+                    print(f"📝 新增關鍵字搜尋結果到資料庫：{pos_tid}")
+            except Exception as e:
+                print(f"❌ 新增記錄失敗：{str(e)}")
+                st.error(f"無法新增記錄：{str(e)}")
+                return
+        else:
+            # 更新現有記錄
+            update_sql = """
+                UPDATE candidates
+                SET label = :label, note = :note
+                WHERE pos_tid = :pos_tid
+            """
+            result = conn.execute(text(update_sql), {
+                "label": label,
+                "note": note,
+                "pos_tid": pos_tid
+            })
+            if result.rowcount == 0 and group_id != 999:
+                st.warning(f"警告：沒有找到 pos_tid = {pos_tid} 的記錄")
+    
     if group_id != 999:
         print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index+1}題")
     else:
-        print(f"💾 從關鍵字搜尋儲存標記：{pos_tid} -> {label} from group {group_id}")
-    
-    with engine.begin() as conn:
-        result = conn.execute(text(update_sql), {"label": label, "note": note, "pos_tid": pos_tid})
-        if result.rowcount == 0:
-            st.warning(f"警告：沒有找到 pos_tid = {pos_tid} 的記錄")
+        print(f"🔑 從關鍵字搜尋儲存標記：{pos_tid} -> {label} from group {group_id}")
     
     # 標記需要更新，但不立即載入
     st.session_state.need_update = True
@@ -193,7 +239,7 @@ def show_scam_posts_view() -> None:
         WHERE label = '是'
         ORDER BY pos_tid DESC
     """
-    scam_posts = pd.read_sql(query, engine)
+    scam_posts = pd.read_sql(query, labeling_engine)
     
     if len(scam_posts) == 0:
         st.info("目前還沒有被標記為詐騙的貼文")
@@ -244,7 +290,7 @@ def show_post_search() -> None:
             FROM candidates 
             WHERE pos_tid = :pos_tid
         """
-        result = pd.read_sql(text(query), engine, params={"pos_tid": pos_tid})
+        result = pd.read_sql(text(query), labeling_engine, params={"pos_tid": pos_tid})
         
         if len(result) == 0:
             st.warning(f"找不到 ID 為 {pos_tid} 的貼文")
@@ -329,7 +375,7 @@ def show_keyword_search() -> None:
     
     # 關鍵字輸入區域
     keywords_input = st.text_area(
-        "請輸入關鍵字（每行一個）",
+        "請輸入關鍵字（每行一個） (搜尋時間最長需要50秒)  (貼文出現的順序每次都是隨機的)",
         value="\n".join(st.session_state.search_keywords) if st.session_state.search_keywords else "",
         help="每行輸入一個關鍵字，系統會根據選擇的邏輯進行搜尋"
     )
@@ -348,9 +394,6 @@ def show_keyword_search() -> None:
     # 搜尋按鈕
     if st.button("🔍 開始搜尋", type="primary", disabled=not keywords):
         try:
-            # 建立來源資料庫引擎
-            source_engine = create_engine("postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis")
-            
             # 執行搜尋
             results_df = fetch_candidate_posts(
                 source_engine=source_engine,
@@ -437,7 +480,7 @@ if __name__ == '__main__':
     st.title("詐騙貼文人工標記工具")
     
     # 建立頁籤
-    tab1, tab2, tab3 = st.tabs(["📝 標記模式", "👀 瀏覽模式", "🔎 關鍵字搜尋"])
+    tab1, tab2, tab3 = st.tabs(["📝 標記模式", "👀 瀏覽模式", "🔑 關鍵字搜尋"])
     
     with tab1:
         # 動態獲取群組編號
@@ -456,7 +499,7 @@ if __name__ == '__main__':
         df = get_current_data(group_id)
         
         # --- 確保有 label/note 欄位 ---
-        with engine.begin() as conn:
+        with labeling_engine.begin() as conn:
             conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS label TEXT"))
             conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS note TEXT"))
         
