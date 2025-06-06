@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
 from datetime import datetime
+from candidates_dataloader_to_sql import fetch_candidate_posts
 
 # 設定資料庫連線（標記資料）
 DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
@@ -210,7 +211,7 @@ def show_scam_posts_view() -> None:
 
 def show_post_search() -> None:
     """根據 pos_tid 查詢特定貼文"""
-    st.markdown("### 🔍貼文查詢")
+    st.markdown("### 📖貼文查詢")
     
     # 初始化編輯狀態
     if 'has_unsaved_changes' not in st.session_state:
@@ -302,13 +303,84 @@ def show_post_search() -> None:
         if st.session_state.has_unsaved_changes:
             st.warning("⚠️ 您有未存檔的更改！")
 
+def show_keyword_search() -> None:
+    """顯示關鍵字搜尋模式的介面"""
+    
+    # 關鍵字輸入區域
+    keywords_input = st.text_area(
+        "請輸入關鍵字（每行一個）",
+        help="每行輸入一個關鍵字，系統會根據選擇的邏輯進行搜尋"
+    )
+    
+    # 將輸入轉換為關鍵字列表
+    keywords = [kw.strip() for kw in keywords_input.split('\n') if kw.strip()]
+    
+    # 搜尋邏輯選擇
+    search_logic = st.radio(
+        "搜尋邏輯",
+        options=["OR", "AND"],
+        help="OR：符合任一關鍵字即顯示\nAND：必須符合所有關鍵字才顯示"
+    )
+    
+    # 搜尋按鈕
+    if st.button("🔍 開始搜尋", type="primary", disabled=not keywords):
+        try:
+            # 建立來源資料庫引擎
+            source_engine = create_engine("postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis")
+            
+            # 執行搜尋
+            results_df = fetch_candidate_posts(
+                source_engine=source_engine,
+                keywords=keywords,
+                limit=20,
+                group_count=1,  # 搜尋模式下不需要分組
+                search_logic=search_logic
+            )
+            
+            if len(results_df) == 0:
+                st.warning("沒有找到符合條件的貼文")
+                return
+            
+            # 顯示搜尋結果數量
+            st.success(f"找到 {len(results_df)} 則符合條件的貼文")
+            
+            # 顯示搜尋結果
+            for idx, row in results_df.iterrows():
+                with st.container():
+                    st.markdown("---")
+                    # 貼文標題
+                    st.markdown(f"**貼文 ID：** `{row['pos_tid']}`")
+                    # 貼文內容
+                    st.text_area("貼文內容", row['content'], height=200, disabled=True, label_visibility="collapsed", key=f"keyword_search_{row['pos_tid']}")
+                    
+                    # 標記區域
+                    col1, col2, col3 = st.columns([1, 1, 2])
+                    with col1:
+                        if st.button("✅ 是", key=f"yes_{row['pos_tid']}"):
+                            save_label_only(row['pos_tid'], "是", "", 0)  # 使用 group_id=0 作為搜尋結果的群組
+                            st.success("已標記為「是」")
+                            st.rerun()
+                    with col2:
+                        if st.button("❌ 否", key=f"no_{row['pos_tid']}"):
+                            save_label_only(row['pos_tid'], "否", "", 0)  # 使用 group_id=0 作為搜尋結果的群組
+                            st.success("已標記為「否」")
+                            st.rerun()
+                    with col3:
+                        # 顯示當前標記狀態
+                        current_label = row.get('label')
+                        if pd.notna(current_label) and current_label:
+                            st.info(f"當前標記：{current_label}")
+            
+        except Exception as e:
+            st.error(f"搜尋時發生錯誤：{str(e)}")
+
 #======================================================================================
 
 if __name__ == '__main__':
     st.title("詐騙貼文人工標記工具")
     
     # 建立頁籤
-    tab1, tab2 = st.tabs(["📝 標記模式", "🔍 瀏覽模式"])
+    tab1, tab2, tab3 = st.tabs(["📝 標記模式", "👀 瀏覽模式", "🔎 關鍵字搜尋"])
     
     with tab1:
         # 原有的標記功能
@@ -335,10 +407,13 @@ if __name__ == '__main__':
     
     with tab2:
         # 瀏覽模式的子頁籤
-        subtab1, subtab2 = st.tabs(["📱 詐騙貼文瀏覽", "🔍 貼文查詢"])
+        subtab1, subtab2 = st.tabs(["📱 詐騙貼文瀏覽", "📖 貼文查詢"])
         
         with subtab1:
             show_scam_posts_view()
         
         with subtab2:
             show_post_search()
+    
+    with tab3:
+        show_keyword_search()
