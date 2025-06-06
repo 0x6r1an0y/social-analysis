@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
-from datetime import datetime
 from candidates_dataloader_to_sql import fetch_candidate_posts
 
 # 設定資料庫連線（標記資料）
@@ -370,18 +369,33 @@ def show_keyword_search() -> None:
         st.session_state.search_results = None
     if 'search_keywords' not in st.session_state:
         st.session_state.search_keywords = None
+    if 'exclude_keywords' not in st.session_state:
+        st.session_state.exclude_keywords = None
     if 'search_logic' not in st.session_state:
         st.session_state.search_logic = None
+    if 'label_message' not in st.session_state:
+        st.session_state.label_message = None
+    if 'label_message_pos_tid' not in st.session_state:
+        st.session_state.label_message_pos_tid = None
     
     # 關鍵字輸入區域
     keywords_input = st.text_area(
-        "請輸入關鍵字（每行一個） (搜尋時間最長需要50秒)  (貼文出現的順序每次都是隨機的)",
+        "請輸入關鍵字(每行一個) ",
         value="\n".join(st.session_state.search_keywords) if st.session_state.search_keywords else "",
         help="每行輸入一個關鍵字，系統會根據選擇的邏輯進行搜尋"
     )
     
+    exclude_keywords_input = st.text_area(
+        "請輸入要排除的關鍵字(每行一個)",
+        value="\n".join(st.session_state.exclude_keywords) if st.session_state.exclude_keywords else "",
+        help="每行輸入一個要排除的關鍵字，符合這些關鍵字的貼文將不會顯示"
+    )
+
+    st.text("(最多500筆結果) (時間最長需要30秒) (貼文出現的順序是隨機的)")
+    
     # 將輸入轉換為關鍵字列表
     keywords = [kw.strip() for kw in keywords_input.split('\n') if kw.strip()]
+    exclude_keywords = [kw.strip() for kw in exclude_keywords_input.split('\n') if kw.strip()]
     
     # 搜尋邏輯選擇
     search_logic = st.radio(
@@ -398,7 +412,8 @@ def show_keyword_search() -> None:
             results_df = fetch_candidate_posts(
                 source_engine=source_engine,
                 keywords=keywords,
-                limit=1000,  # 先取得較多結果，但分頁顯示
+                exclude_keywords=exclude_keywords,  # 新增排除關鍵字參數
+                limit=500,  # 先取得較多結果，但分頁顯示
                 group_count=1,  # 搜尋模式下不需要分組
                 search_logic=search_logic
             )
@@ -412,6 +427,7 @@ def show_keyword_search() -> None:
             # 儲存搜尋結果和參數到 session state
             st.session_state.search_results = results_df
             st.session_state.search_keywords = keywords
+            st.session_state.exclude_keywords = exclude_keywords
             st.session_state.search_logic = search_logic
             st.session_state.search_page = 0  # 重置頁碼
             
@@ -447,19 +463,34 @@ def show_keyword_search() -> None:
                 col1, col2, col3 = st.columns([1, 1, 2])
                 with col1:
                     if st.button("✅ 是", key=f"yes_{row['pos_tid']}"):
-                        save_label_only(row['pos_tid'], "是", "", 999)
-                        st.success("已標記為「是」")
-                        st.rerun()
+                        try:
+                            save_label_only(row['pos_tid'], "是", "", 999)
+                            st.session_state.label_message = "已標記為「是」"
+                            st.session_state.label_message_pos_tid = row['pos_tid']
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"標記失敗：{str(e)}")
                 with col2:
                     if st.button("❌ 否", key=f"no_{row['pos_tid']}"):
-                        save_label_only(row['pos_tid'], "否", "", 999)
-                        st.success("已標記為「否」")
-                        st.rerun()
+                        try:
+                            save_label_only(row['pos_tid'], "否", "", 999)
+                            st.session_state.label_message = "已標記為「否」"
+                            st.session_state.label_message_pos_tid = row['pos_tid']
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"標記失敗：{str(e)}")
                 with col3:
                     # 顯示當前標記狀態
                     current_label = row.get('label')
                     if pd.notna(current_label) and current_label:
                         st.info(f"當前標記：{current_label}")
+                
+                # 顯示標記訊息（如果有的話）
+                if st.session_state.label_message and st.session_state.label_message_pos_tid == row['pos_tid']:
+                    st.success(st.session_state.label_message, icon="✅" if "是" in st.session_state.label_message else "❌")
+                    # 清除訊息，避免重複顯示
+                    st.session_state.label_message = None
+                    st.session_state.label_message_pos_tid = None
         
         # 分頁導航按鈕
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -485,7 +516,7 @@ if __name__ == '__main__':
     with tab1:
         # 動態獲取群組編號
         group_ids = get_all_group_ids()
-        group_id = st.selectbox("請選擇你的群組編號", group_ids)
+        group_id = st.selectbox("請選擇你的群組編號 (999是關鍵字搜尋的標記)", group_ids)
         
         # --- 初始化 session state ---
         if 'label_index' not in st.session_state:

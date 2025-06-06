@@ -84,7 +84,8 @@ def fetch_candidate_posts(
     keywords: List[str],
     limit: int,
     group_count: int = 5,
-    search_logic: str = 'OR'  # 新增參數，可選擇 'OR' 或 'AND'
+    search_logic: str = 'OR',  # 可選擇 'OR' 或 'AND'
+    exclude_keywords: List[str] = None  # 新增排除關鍵字參數
 ) -> pd.DataFrame:
     """
     從來源資料庫獲取候選貼文
@@ -95,6 +96,7 @@ def fetch_candidate_posts(
         limit: 要獲取的貼文數量
         group_count: 要分成的組別數量
         search_logic: 搜尋邏輯，可選擇 'OR'（符合任一關鍵字）或 'AND'（符合所有關鍵字）
+        exclude_keywords: 要排除的關鍵字列表
     
     Returns:
         包含候選貼文的 DataFrame
@@ -106,6 +108,11 @@ def fetch_candidate_posts(
             
         # 根據搜尋邏輯建立 where 子句
         where_clause = f" {search_logic} ".join([f"content ILIKE '%{kw}%'" for kw in keywords])
+        
+        # 如果有排除關鍵字，加入 NOT 條件
+        if exclude_keywords:
+            exclude_conditions = " AND ".join([f"content NOT ILIKE '%{kw}%'" for kw in exclude_keywords])
+            where_clause = f"({where_clause}) AND ({exclude_conditions})"
             
         sql = f"SELECT pos_tid, content FROM posts WHERE {where_clause} LIMIT {limit}"
         
