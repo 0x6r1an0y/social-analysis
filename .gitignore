@@ -1,7 +1,13 @@
 *.csv
 *.zip
+*.xls
 *.xlsx
-*.txt
+*.log
+log.txt
 .vscode/
 *.exe
 __pycache__/
+QSearch_Question.txt
+步驟.txt
+*.7z
+*.rar
