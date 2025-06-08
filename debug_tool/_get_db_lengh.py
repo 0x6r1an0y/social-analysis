@@ -1,9 +1,9 @@
 from sqlalchemy import create_engine, text
 
 # 設定資料庫連線
-DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
+DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
 engine = create_engine(DB_URL)
-table_name = "posts"  # 替換成你的資料表名稱
+table_name = "posts_deduplicated"  # 替換成你的資料表名稱
 
 # 查詢特定資料表的行數
 def get_table_row_count(table_name):
