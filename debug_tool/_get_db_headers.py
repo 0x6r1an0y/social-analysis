@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, inspect
 import pandas as pd
 
 # 設定資料庫連線
-DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
+DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
 engine = create_engine(DB_URL)
 
 def list_all_tables():
