@@ -341,98 +341,188 @@ def show_word_analysis() -> None:
 
 def show_post_search() -> None:
     """根據 pos_tid 查詢特定貼文"""
-    st.markdown("### 📖候選貼文查詢")
-    st.text("非全貼文查詢，需要有標記過是或否的資料才可以查詢")
     
-    # 初始化編輯狀態
-    if 'has_unsaved_changes' not in st.session_state:
-        st.session_state.has_unsaved_changes = False
-    if 'edited_label' not in st.session_state:
-        st.session_state.edited_label = None
-    if 'edited_note' not in st.session_state:
-        st.session_state.edited_note = None
-    if 'current_post_id' not in st.session_state:
-        st.session_state.current_post_id = None
+    # 建立分頁
+    search_tab1, search_tab2 = st.tabs(["📝 標記資料庫查詢", "🔍 原始資料庫查詢"])
     
-    # 搜尋輸入框
-    pos_tid = st.text_input("請輸入貼文 ID (pos_tid)")
+    # 初始化共享的搜尋 ID
+    if 'shared_search_id' not in st.session_state:
+        st.session_state.shared_search_id = ""
     
-    if pos_tid:
-        # 查詢貼文
-        query = """
-            SELECT pos_tid, content, label, note, group_id
-            FROM candidates 
-            WHERE pos_tid = :pos_tid
-        """
-        result = pd.read_sql(text(query), labeling_engine, params={"pos_tid": pos_tid})
+    with search_tab1:
+        st.text("非全貼文查詢，需要有標記過是或否的資料才可以查詢")
         
-        if len(result) == 0:
-            st.warning(f"找不到 ID 為 {pos_tid} 的貼文")
-            return
-        
-        post = result.iloc[0]
-        
-        # 如果是新貼文，重置編輯狀態
-        if st.session_state.current_post_id != pos_tid:
-            st.session_state.current_post_id = pos_tid
+        # 初始化編輯狀態
+        if 'has_unsaved_changes' not in st.session_state:
             st.session_state.has_unsaved_changes = False
-            st.session_state.edited_label = post['label']
-            st.session_state.edited_note = post['note']
+        if 'edited_label' not in st.session_state:
+            st.session_state.edited_label = None
+        if 'edited_note' not in st.session_state:
+            st.session_state.edited_note = None
+        if 'current_post_id' not in st.session_state:
+            st.session_state.current_post_id = None
         
-        # 顯示貼文內容
-        st.markdown("---")
-        st.markdown(f"**貼文 ID：** `{post['pos_tid']}`")
-        # 貼文內容（改為純文字顯示）
-        st.text_area("貼文內容", post['content'], height=200, disabled=True, label_visibility="collapsed", key=f"scam_posts_search_{post['pos_tid']}")
+        # 搜尋輸入框
+        pos_tid = st.text_input("請輸入貼文 ID (pos_tid)", 
+                               value=st.session_state.shared_search_id,
+                               key="labeling_search")
         
-        # 編輯區域
-        st.markdown("### 編輯標記")
-        col1, col2 = st.columns(2)
+        # 更新共享的搜尋 ID
+        if pos_tid != st.session_state.shared_search_id:
+            st.session_state.shared_search_id = pos_tid
         
-        with col1:
-            st.caption(f"群組：{post['group_id']}")
-            # 標記選擇
-            new_label = st.radio(
-                "標記",
-                options=["是", "否", "尚未判斷"],
-                index=["是", "否", "尚未判斷"].index(st.session_state.edited_label if st.session_state.edited_label else "尚未判斷"),
-                key=f"label_edit_{post['pos_tid']}"
-            )
-            # 只有當實際值改變時才標記為未存檔
-            if new_label != post['label']:
-                st.session_state.edited_label = new_label
-                st.session_state.has_unsaved_changes = True
-            elif new_label == post['label'] and st.session_state.edited_label != post['label']:
-                st.session_state.edited_label = new_label
-                st.session_state.has_unsaved_changes = False
+        if pos_tid:
+            # 查詢貼文
+            query = """
+                SELECT pos_tid, content, label, note, group_id
+                FROM candidates 
+                WHERE pos_tid = :pos_tid
+            """
+            result = pd.read_sql(text(query), labeling_engine, params={"pos_tid": pos_tid})
+            
+            if len(result) == 0:
+                st.warning(f"找不到 ID 為 {pos_tid} 的貼文")
+                st.info("💡 您可以切換到「原始資料庫查詢」分頁查看此貼文是否在原始資料庫中")
+            else:
+                post = result.iloc[0]
+                
+                # 如果是新貼文，重置編輯狀態
+                if st.session_state.current_post_id != pos_tid:
+                    st.session_state.current_post_id = pos_tid
+                    st.session_state.has_unsaved_changes = False
+                    st.session_state.edited_label = post['label']
+                    st.session_state.edited_note = post['note']
+                
+                # 顯示貼文內容
+                st.markdown("---")
+                st.markdown(f"**貼文 ID：** `{post['pos_tid']}`")
+                # 貼文內容（改為純文字顯示）
+                st.text_area("貼文內容", post['content'], height=200, disabled=True, label_visibility="collapsed", key=f"scam_posts_search_{post['pos_tid']}")
+                
+                # 編輯區域
+                st.markdown("### 編輯標記")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.caption(f"群組：{post['group_id']}")
+                    # 標記選擇
+                    new_label = st.radio(
+                        "標記",
+                        options=["是", "否", "尚未判斷"],
+                        index=["是", "否", "尚未判斷"].index(st.session_state.edited_label if st.session_state.edited_label else "尚未判斷"),
+                        key=f"label_edit_{post['pos_tid']}"
+                    )
+                    # 只有當實際值改變時才標記為未存檔
+                    if new_label != post['label']:
+                        st.session_state.edited_label = new_label
+                        st.session_state.has_unsaved_changes = True
+                    elif new_label == post['label'] and st.session_state.edited_label != post['label']:
+                        st.session_state.edited_label = new_label
+                        st.session_state.has_unsaved_changes = False
+                
+                with col2:
+                    # 備註編輯
+                    new_note = st.text_area(
+                        "備註",
+                        value=st.session_state.edited_note if pd.notna(st.session_state.edited_note) else "",
+                        key=f"note_edit_{post['pos_tid']}"
+                    )
+                    # 只有當實際值改變時才標記為未存檔
+                    if new_note != (post['note'] if pd.notna(post['note']) else ""):
+                        st.session_state.edited_note = new_note
+                        st.session_state.has_unsaved_changes = True
+                    elif new_note == (post['note'] if pd.notna(post['note']) else "") and st.session_state.edited_note != post['note']:
+                        st.session_state.edited_note = new_note
+                        st.session_state.has_unsaved_changes = False
+                
+                # 存檔按鈕
+                col_save1, col_save2 = st.columns([1, 3])
+                with col_save1:
+                    if st.button("💾 儲存更改", type="primary", disabled=not st.session_state.has_unsaved_changes):
+                        save_label_only(post['pos_tid'], st.session_state.edited_label, st.session_state.edited_note, post['group_id'])
+                        st.session_state.has_unsaved_changes = False
+                        st.success("✅ 已儲存更改")
+                        st.rerun()
+                
+                # 顯示未存檔提醒
+                if st.session_state.has_unsaved_changes:
+                    st.warning("⚠️ 您有未存檔的更改！")
+    
+    with search_tab2:
+        st.text("查詢原始資料庫中的所有貼文")
         
-        with col2:
-            # 備註編輯
-            new_note = st.text_area(
-                "備註",
-                value=st.session_state.edited_note if pd.notna(st.session_state.edited_note) else "",
-                key=f"note_edit_{post['pos_tid']}"
-            )
-            # 只有當實際值改變時才標記為未存檔
-            if new_note != (post['note'] if pd.notna(post['note']) else ""):
-                st.session_state.edited_note = new_note
-                st.session_state.has_unsaved_changes = True
-            elif new_note == (post['note'] if pd.notna(post['note']) else "") and st.session_state.edited_note != post['note']:
-                st.session_state.edited_note = new_note
-                st.session_state.has_unsaved_changes = False
+        # 搜尋輸入框（使用共享的搜尋 ID）
+        source_pos_tid = st.text_input("請輸入貼文 ID (pos_tid)", 
+                                      value=st.session_state.shared_search_id,
+                                      key="source_search")
         
-        # 存檔按鈕
-        col_save1, col_save2 = st.columns([1, 3])
-        with col_save1:
-            if st.button("💾 儲存更改", type="primary", disabled=not st.session_state.has_unsaved_changes):
-                save_label_only(post['pos_tid'], st.session_state.edited_label, st.session_state.edited_note, post['group_id'])
-                st.session_state.has_unsaved_changes = False
-                st.success("✅ 已儲存更改")
-                st.rerun()
+        # 更新共享的搜尋 ID
+        if source_pos_tid != st.session_state.shared_search_id:
+            st.session_state.shared_search_id = source_pos_tid
         
-        # 顯示未存檔提醒
-        if st.session_state.has_unsaved_changes:
-            st.warning("⚠️ 您有未存檔的更改！")
+        if source_pos_tid:
+            # 查詢原始資料庫
+            query = """
+                SELECT pos_tid, content, created_time, date, post_type, page_name, 
+                       reaction_all, comment_count, share_count
+                FROM posts 
+                WHERE pos_tid = :pos_tid
+            """
+            try:
+                result = pd.read_sql(text(query), source_engine, params={"pos_tid": source_pos_tid})
+                
+                if len(result) == 0:
+                    st.warning(f"在原始資料庫中找不到 ID 為 {source_pos_tid} 的貼文")
+                else:
+                    post = result.iloc[0]
+                    
+                    # 顯示貼文內容
+                    st.markdown("---")
+                    st.markdown(f"**貼文 ID：** `{post['pos_tid']}`")
+                    st.text_area("貼文內容", post['content'], height=200, disabled=True, label_visibility="collapsed", key=f"source_posts_search_{post['pos_tid']}")
+                    
+                    # 顯示貼文資訊
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption(f"建立時間：{post['created_time']}")
+                        st.caption(f"日期：{post['date']}")
+                    with col2:
+                        st.caption(f"貼文類型：{post['post_type']}")
+                        st.caption(f"頁面名稱：{post['page_name']}")
+                    with col3:
+                        st.caption(f"互動數：{post['reaction_all']}")
+                        st.caption(f"留言數：{post['comment_count']}")
+                        st.caption(f"分享數：{post['share_count']}")
+                    
+                    # 檢查是否已在標記資料庫中
+                    check_query = "SELECT label FROM candidates WHERE pos_tid = :pos_tid"
+                    check_result = pd.read_sql(text(check_query), labeling_engine, params={"pos_tid": source_pos_tid})
+                    
+                    if len(check_result) > 0:
+                        st.info(f"此貼文已在標記資料庫中，當前標記：{check_result.iloc[0]['label']}")
+                    else:
+                        st.info("此貼文尚未加入標記資料庫")
+                        
+                        # 提供快速加入標記資料庫的按鈕
+                        if st.button("📝 加入標記資料庫", type="primary"):
+                            try:
+                                # 插入到標記資料庫
+                                insert_sql = """
+                                    INSERT INTO candidates (pos_tid, content, group_id, label, note)
+                                    VALUES (:pos_tid, :content, 999, '尚未判斷', '')
+                                """
+                                with labeling_engine.begin() as conn:
+                                    conn.execute(text(insert_sql), {
+                                        "pos_tid": post['pos_tid'],
+                                        "content": post['content']
+                                    })
+                                st.success("✅ 已成功加入標記資料庫！")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"加入標記資料庫失敗：{str(e)}")
+                
+            except Exception as e:
+                st.error(f"查詢原始資料庫時發生錯誤：{str(e)}")
 
 def show_keyword_search() -> None:
     """顯示關鍵字搜尋模式的介面"""
