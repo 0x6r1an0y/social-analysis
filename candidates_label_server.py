@@ -341,7 +341,8 @@ def show_word_analysis() -> None:
 
 def show_post_search() -> None:
     """根據 pos_tid 查詢特定貼文"""
-    st.markdown("### 📖貼文查詢")
+    st.markdown("### 📖候選貼文查詢")
+    st.text("非全貼文查詢，需要有標記過是或否的資料才可以查詢")
     
     # 初始化編輯狀態
     if 'has_unsaved_changes' not in st.session_state:
@@ -465,7 +466,7 @@ def show_keyword_search() -> None:
         help="每行輸入一個要排除的關鍵字，符合這些關鍵字的貼文將不會顯示"
     )
 
-    st.text("(最多500筆結果) (時間最長需要30秒) (貼文出現的順序是隨機的)")
+    st.text("(最多500筆結果) \n (時間最長需要30秒) \n (貼文出現的順序是隨機的)")
     
     # 將輸入轉換為關鍵字列表
     keywords = [kw.strip() for kw in keywords_input.split('\n') if kw.strip()]
