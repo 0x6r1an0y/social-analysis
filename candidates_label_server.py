@@ -2,6 +2,13 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
 from candidates_dataloader_to_sql import fetch_candidate_posts
+import logging
+import datetime
+import subprocess
+
+# 設定 logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 設定資料庫連線（標記資料）
 LABELING_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
@@ -10,6 +17,16 @@ SOURCE_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_m
 # 建立兩個資料庫的連線引擎
 labeling_engine = create_engine(LABELING_DB_URL)
 source_engine = create_engine(SOURCE_DB_URL)
+
+# 確保有 system_settings 資料表
+with labeling_engine.begin() as conn:
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key VARCHAR(50) PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
 
 # --- 獲取所有群組編號 ---
 @st.cache_data
@@ -24,7 +41,7 @@ def get_all_group_ids() -> list:
 def load_data_from_db(group_id: int) -> pd.DataFrame:
     """從sql載入該group的data"""
     query = f"SELECT * FROM candidates WHERE group_id = {group_id}"
-    print(f"🔄 載入群組 {group_id} 的sql資料")
+    logger.info(f"🔄 載入群組 {group_id} 的sql資料")
     return pd.read_sql(query, labeling_engine)
 
 def get_current_data(group_id: int) -> pd.DataFrame:
@@ -41,19 +58,18 @@ def get_current_data(group_id: int) -> pd.DataFrame:
         # 計算並設置到最新進度
         latest_index = get_latest_progress(db)
         st.session_state.label_index = latest_index
-        print(f"🔄 切換到群組 {group_id}，題號導向到第{latest_index+1}題")
+        logger.info(f"🔄 切換到群組 {group_id}，題號導向到第{latest_index+1}題")
         st.success(f"已恢復進度到第{latest_index+1}題")
         return db
     
     # 檢查是否為導航動作且需要更新
     is_navigation = st.session_state.get('just_navigated', False)
     if is_navigation and st.session_state.need_update:
-        print("📥 導航時檢測到資料需要更新，重新載入...")
+        logger.info("📥 導航時檢測到資料需要更新，重新載入...")
         load_data_from_db.clear()  # 清除快取
         st.session_state.need_update = False
         st.session_state.just_navigated = False
         db = load_data_from_db(group_id)
-        #st.rerun()
         return db
     
     # 重置導航標記
@@ -98,9 +114,9 @@ def save_label_only(pos_tid: str, label: str, note: str, group_id: int) -> None:
                         "label": label,
                         "note": note
                     })
-                    print(f"📝 新增關鍵字搜尋結果到資料庫：{pos_tid}")
+                    logger.info(f"📝 新增關鍵字搜尋結果到資料庫：{pos_tid}")
             except Exception as e:
-                print(f"❌ 新增記錄失敗：{str(e)}")
+                logger.error(f"❌ 新增記錄失敗：{str(e)}")
                 st.error(f"無法新增記錄：{str(e)}")
                 return
         else:
@@ -119,9 +135,9 @@ def save_label_only(pos_tid: str, label: str, note: str, group_id: int) -> None:
                 st.warning(f"警告：沒有找到 pos_tid = {pos_tid} 的記錄")
     
     if group_id != 999:
-        print(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index+1}題")
+        logger.info(f"💾 儲存標記：{pos_tid} -> {label} from group {group_id} 第{st.session_state.label_index+1}題")
     else:
-        print(f"🔑 從關鍵字搜尋儲存標記：{pos_tid} -> {label} from group {group_id}")
+        logger.info(f"🔑 從關鍵字搜尋儲存標記：{pos_tid} -> {label} from group {group_id}")
     
     # 標記需要更新，但不立即載入
     st.session_state.need_update = True
@@ -264,6 +280,64 @@ def show_scam_posts_view() -> None:
             with col2:
                 if pd.notna(post['note']) and post['note']:
                     st.caption(f"備註：{post['note']}")
+
+def show_word_analysis() -> None:
+    """顯示詞彙分析結果"""
+    st.markdown("### 📊 詞彙分析")
+    
+    # 從資料庫讀取上次生成時間
+    with labeling_engine.connect() as conn:
+        result = conn.execute(text("SELECT value, updated_at FROM system_settings WHERE key = 'last_word_analysis_time'"))
+        row = result.fetchone()
+        last_generation_time = row[0] if row else None
+    
+    # 顯示上次生成時間
+    if last_generation_time:
+        st.info(f"上次生成時間：{last_generation_time}")
+    
+    # 手動生成按鈕
+    if st.button("🔄 生成詞彙分析圖表", type="primary"):
+        try:
+            
+            # 執行分析程式
+            subprocess.run(['python', 'analyze_scam_posts.py'], check=True)
+            
+            # 更新資料庫中的生成時間
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with labeling_engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO system_settings (key, value, updated_at)
+                        VALUES ('last_word_analysis_time', :value, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE
+                        SET value = :value, updated_at = CURRENT_TIMESTAMP
+                    """),
+                    {"value": current_time}
+                )
+            
+            st.success("✅ 詞彙分析圖表生成成功！")
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"生成圖表時發生錯誤：{str(e)}")
+            return
+    
+    # 顯示圖表
+    try:
+        # 檢查圖表檔案是否存在
+        import os
+        if os.path.exists('word_frequency.png') and os.path.exists('wordcloud.png'):
+            # 顯示詞頻分析圖
+            st.markdown("#### 📈 詞頻分析圖")
+            st.image('word_frequency.png', use_container_width=True)
+            
+            # 顯示詞雲圖
+            st.markdown("#### ☁️ 詞雲圖")
+            st.image('wordcloud.png', use_container_width=True)
+        else:
+            st.info("請點擊上方按鈕生成詞彙分析圖表")
+    except Exception as e:
+        st.error(f"讀取圖表時發生錯誤：{str(e)}")
 
 def show_post_search() -> None:
     """根據 pos_tid 查詢特定貼文"""
@@ -539,13 +613,16 @@ if __name__ == '__main__':
     
     with tab2:
         # 瀏覽模式的子頁籤
-        subtab1, subtab2 = st.tabs(["📱 詐騙貼文瀏覽", "📖 貼文查詢"])
+        subtab1, subtab2, subtab3 = st.tabs(["📱 詐騙貼文瀏覽", "📖 貼文查詢", "📊 詞彙分析"])
         
         with subtab1:
             show_scam_posts_view()
         
         with subtab2:
             show_post_search()
+            
+        with subtab3:
+            show_word_analysis()
     
     with tab3:
         show_keyword_search()
