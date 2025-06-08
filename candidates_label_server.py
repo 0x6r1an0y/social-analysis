@@ -331,8 +331,8 @@ def show_word_analysis() -> None:
             st.markdown("#### 📈 詞頻分析圖")
             st.image('word_frequency.png', use_container_width=True)
             
-            # 顯示詞雲圖
-            st.markdown("#### ☁️ 詞雲圖")
+            # 顯示文字雲圖
+            st.markdown("#### ☁️ 文字雲")
             st.image('wordcloud.png', use_container_width=True)
         else:
             st.info("請點擊上方按鈕生成詞彙分析圖表")
@@ -513,15 +513,16 @@ def show_keyword_search() -> None:
     
     # 如果有搜尋結果，顯示分頁內容
     if st.session_state.search_results is not None:
+        num_per_page = 20
         df = st.session_state.search_results
-        total_pages = (len(df) + 19) // 20  # 向上取整，計算總頁數
+        total_pages = (len(df) + (num_per_page - 1)) // num_per_page  # 向上取整，計算總頁數
         
         # 顯示分頁資訊
         st.markdown(f"---\n#### 搜尋結果（第 {st.session_state.search_page + 1} 頁，共 {total_pages} 頁）")
         
         # 計算當前頁的資料範圍
-        start_idx = st.session_state.search_page * 20
-        end_idx = min(start_idx + 20, len(df))
+        start_idx = st.session_state.search_page * num_per_page
+        end_idx = min(start_idx + num_per_page, len(df))
         
         # 顯示當前頁的資料
         for idx in range(start_idx, end_idx):
@@ -571,12 +572,30 @@ def show_keyword_search() -> None:
         with col1:
             if st.button("⬅️ 上一頁", disabled=st.session_state.search_page <= 0):
                 st.session_state.search_page -= 1
+                # 使用 JavaScript 跳轉到頁面頂部
+                st.markdown("<script>window.scrollTo(0, 0);</script>", unsafe_allow_html=True)
                 st.rerun()
         with col2:
-            st.markdown(f"<div style='text-align: center'>第 {st.session_state.search_page + 1} 頁，共 {total_pages} 頁</div>", unsafe_allow_html=True)
+            # 頁碼輸入框
+            target_page = st.number_input(
+                "前往頁碼",
+                min_value=1,
+                max_value=total_pages,
+                value=st.session_state.search_page + 1,
+                label_visibility="collapsed",
+                key="page_input"
+            )
+            # 當頁碼改變時跳轉
+            if target_page != st.session_state.search_page + 1:
+                st.session_state.search_page = target_page - 1
+                # 使用 JavaScript 跳轉到頁面頂部
+                st.markdown("<script>window.scrollTo(0, 0);</script>", unsafe_allow_html=True)
+                st.rerun()
         with col3:
             if st.button("下一頁 ➡️", disabled=st.session_state.search_page >= total_pages - 1):
                 st.session_state.search_page += 1
+                # 使用 JavaScript 跳轉到頁面頂部
+                st.markdown("<script>window.scrollTo(0, 0);</script>", unsafe_allow_html=True)
                 st.rerun()
 
 #======================================================================================

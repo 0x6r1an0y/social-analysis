@@ -97,7 +97,7 @@ if __name__ == "__main__":
             for column, value in row.items():
                 print(f"{column}: {value}")
             print("-" * 50)
-    
+    '''
     # 方法2: 使用 pandas DataFrame
     print("\n=== 使用 pandas DataFrame 查詢 ===")
     df_result = get_data_by_pos_tid_pandas(target_pos_tid, table_name)
@@ -110,6 +110,7 @@ if __name__ == "__main__":
             print(f"\n第一筆資料:")
             for column in df_result.columns:
                 print(f"{column}: {first_row[column]}")
+    '''
 
 # 簡化版本 - 直接查詢
 def simple_query(pos_tid_value, table_name="your_table_name"):
