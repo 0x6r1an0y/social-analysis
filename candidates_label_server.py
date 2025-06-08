@@ -5,10 +5,29 @@ from candidates_dataloader_to_sql import fetch_candidate_posts
 import logging
 import datetime
 import subprocess
+import os
+
+# 建立 logs 目錄（如果不存在）
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+# 設定日誌檔案名稱（使用當前日期）
+current_date = datetime.datetime.now().strftime('%Y-%m-%d')
+log_filename = f'logs/candidates_label_{current_date}.log'
 
 # 設定 logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename, encoding='utf-8'),
+        logging.StreamHandler()  # 同時輸出到控制台
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# 記錄程式啟動
+logger.info("程式啟動")
 
 # 設定資料庫連線（標記資料）
 LABELING_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
@@ -325,7 +344,6 @@ def show_word_analysis() -> None:
     # 顯示圖表
     try:
         # 檢查圖表檔案是否存在
-        import os
         if os.path.exists('word_frequency.png') and os.path.exists('wordcloud.png'):
             # 顯示詞頻分析圖
             st.markdown("#### 📈 詞頻分析圖")
