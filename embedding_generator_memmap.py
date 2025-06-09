@@ -6,8 +6,7 @@ import logging
 import time
 import os
 import json
-from typing import Optional, Tuple
-import pickle
+from typing import Optional
 import torch
 
 # 設定 logging
