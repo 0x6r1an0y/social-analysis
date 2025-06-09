@@ -110,7 +110,7 @@ class ScamDetectorMemmap:
     def __init__(self, 
                  db_url: str = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash",
                  model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
-                 batch_size: int = 1024,
+                 batch_size: int = 8192,
                  embeddings_dir: str = "embeddings_data",
                  memory_optimized: bool = True):
         """
@@ -292,6 +292,11 @@ class ScamDetectorMemmap:
                 random.shuffle(valid_pos_tids)
             
             while len(results) < limit and processed < len(valid_pos_tids):
+                # 檢查是否需要停止搜尋
+                if hasattr(st, 'session_state') and st.session_state.get('stop_search', False):
+                    logger.info("收到停止搜尋指令，中斷搜尋")
+                    break
+                
                 # 取出這一批的 pos_tid
                 batch_pos_tids = valid_pos_tids[offset:offset + self.batch_size]
                 if not batch_pos_tids:
@@ -796,7 +801,7 @@ def show_post_search() -> None:
                         "標記",
                         options=["是", "否", "尚未判斷"],
                         index=["是", "否", "尚未判斷"].index(st.session_state.edited_label if st.session_state.edited_label else "尚未判斷"),
-                        key=f"label_edit_{post['pos_tid']}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        key=f"label_edit_{post['pos_tid']}"
                     )
                     # 只有當實際值改變時才標記為未存檔
                     if new_label != post['label']:
@@ -811,7 +816,7 @@ def show_post_search() -> None:
                     new_note = st.text_area(
                         "備註",
                         value=st.session_state.edited_note if pd.notna(st.session_state.edited_note) else "",
-                        key=f"note_edit_{post['pos_tid']}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        key=f"note_edit_{post['pos_tid']}"
                     )
                     # 只有當實際值改變時才標記為未存檔
                     if new_note != (post['note'] if pd.notna(post['note']) else ""):
@@ -1091,6 +1096,12 @@ def show_similar_posts_search():
         st.session_state.similar_label_message_pos_tid = None
     if 'similar_detector' not in st.session_state:
         st.session_state.similar_detector = None
+    if 'search_in_progress' not in st.session_state:
+        st.session_state.search_in_progress = False
+    if 'stop_search' not in st.session_state:
+        st.session_state.stop_search = False
+    if 'similar_search_content' not in st.session_state:
+        st.session_state.similar_search_content = ""
     
     st.markdown("### 🔍 相似貼文搜尋")
     st.markdown("輸入一段文字，系統會找到語意相似的貼文")
@@ -1100,10 +1111,18 @@ def show_similar_posts_search():
     with col1:
         limit = st.number_input("最大結果數量", min_value=5, max_value=100, value=20, step=5)
     with col2:
-        threshold = st.slider("相似度閾值", min_value=0.1, max_value=0.9, value=0.3, step=0.1, help="數值越高，結果越相似")
+        threshold = st.slider("相似度閾值", min_value=0.1, max_value=0.9, value=0.7, step=0.1, help="數值越高，結果越相似")
     
     # 新增隨機搜尋選項
     random_search = st.checkbox("隨機搜尋 (Random Search)", value=False, key="similar_random_search")
+    
+    # 停止搜尋按鈕
+    if st.session_state.search_in_progress:
+        if st.button("⏹️ 停止搜尋", type="secondary", key="stop_search_button"):
+            st.session_state.stop_search = True
+            st.session_state.search_in_progress = False
+            st.success("已發送停止搜尋指令")
+            st.rerun()
     
     # 查詢文字輸入
     query_text = st.text_area(
@@ -1119,39 +1138,63 @@ def show_similar_posts_search():
         st.session_state.similar_search_query = st.session_state.similar_search_content
         # 清除跳轉內容，避免重複執行
         st.session_state.similar_search_content = ""
+        
+        # 設定搜尋狀態
+        st.session_state.search_in_progress = True
+        st.session_state.stop_search = False
+        
+        # 顯示搜尋狀態並重新載入頁面
+        st.info("正在準備自動搜尋...")
+        st.rerun()
+    
+    # 如果正在進行自動搜尋且還沒有結果
+    if (st.session_state.search_in_progress and 
+        st.session_state.similar_search_query and 
+        not st.session_state.similar_search_results):
+        
+        # 顯示搜尋狀態容器
+        status_container = st.empty()
+        status_container.info("正在進行自動搜尋...")
+        
         # 自動執行搜尋
         try:
-            with st.spinner("正在載入模型和搜尋相似貼文..."):
-                # 檢查是否已有 detector，如果沒有則初始化
-                if st.session_state.similar_detector is None:
-                    st.session_state.similar_detector = ScamDetectorMemmap(
-                        embeddings_dir="embeddings_data",
-                        batch_size=1024
-                    )
-                
-                # 執行搜尋（傳入 random_search 參數）
-                results_df = st.session_state.similar_detector.search_similar_posts(
-                    query_text=query_text,
-                    limit=limit,
-                    threshold=threshold,
-                    random_search=random_search
+            # 檢查是否已有 detector，如果沒有則初始化
+            if st.session_state.similar_detector is None:
+                status_container.info("正在載入模型...")
+                st.session_state.similar_detector = ScamDetectorMemmap(
+                    embeddings_dir="embeddings_data",
+                    batch_size=8192
                 )
-                
-                if len(results_df) == 0:
-                    st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
-                    st.session_state.similar_search_results = None
-                    st.session_state.similar_search_page = 0
-                    return
-                
-                # 儲存搜尋結果到 session state
-                st.session_state.similar_search_results = results_df
-                st.session_state.similar_search_query = query_text
+            
+            status_container.info("正在搜尋相似貼文...")
+            
+            # 執行搜尋（使用 0.7 閾值）
+            results_df = st.session_state.similar_detector.search_similar_posts(
+                query_text=st.session_state.similar_search_query,
+                limit=limit,
+                threshold=0.7,  # 固定使用 0.7 閾值
+                random_search=random_search
+            )
+            
+            st.session_state.search_in_progress = False
+            status_container.empty()
+            
+            if len(results_df) == 0:
+                st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
+                st.session_state.similar_search_results = None
                 st.session_state.similar_search_page = 0
-                
-                st.success(f"找到 {len(results_df)} 則相似貼文")
-                st.rerun()
-                
+                return
+            
+            # 儲存搜尋結果到 session state
+            st.session_state.similar_search_results = results_df
+            st.session_state.similar_search_page = 0
+            
+            st.success(f"找到 {len(results_df)} 則相似貼文")
+            st.rerun()
+            
         except Exception as e:
+            st.session_state.search_in_progress = False
+            status_container.empty()
             st.error(f"自動搜尋時發生錯誤：{str(e)}")
             logger.error(f"自動相似貼文搜尋錯誤：{str(e)}")
             # 如果發生錯誤，清理 detector
@@ -1164,38 +1207,64 @@ def show_similar_posts_search():
     
     # 手動搜尋按鈕
     if st.button("🔍 開始搜尋", type="primary", disabled=not query_text.strip(), key="similar_search_button"):
+        # 設定搜尋狀態
+        st.session_state.search_in_progress = True
+        st.session_state.stop_search = False
+        st.session_state.similar_search_query = query_text
+        st.session_state.similar_search_results = None  # 清除之前的結果
+        
+        # 顯示搜尋狀態並重新載入頁面
+        st.info("正在準備搜尋...")
+        st.rerun()
+    
+    # 如果正在進行手動搜尋且還沒有結果
+    if (st.session_state.search_in_progress and 
+        st.session_state.similar_search_query and 
+        not st.session_state.similar_search_results and
+        query_text.strip() == st.session_state.similar_search_query):
+        
+        # 顯示搜尋狀態容器
+        status_container = st.empty()
+        status_container.info("正在進行搜尋...")
+        
         try:
-            with st.spinner("正在載入模型和搜尋相似貼文..."):
-                # 檢查是否已有 detector，如果沒有則初始化
-                if st.session_state.similar_detector is None:
-                    st.session_state.similar_detector = ScamDetectorMemmap(
-                        embeddings_dir="embeddings_data",
-                        batch_size=1024
-                    )
-                
-                # 執行搜尋（傳入 random_search 參數）
-                results_df = st.session_state.similar_detector.search_similar_posts(
-                    query_text=query_text,
-                    limit=limit,
-                    threshold=threshold,
-                    random_search=random_search
+            # 檢查是否已有 detector，如果沒有則初始化
+            if st.session_state.similar_detector is None:
+                status_container.info("正在載入模型...")
+                st.session_state.similar_detector = ScamDetectorMemmap(
+                    embeddings_dir="embeddings_data",
+                    batch_size=8192
                 )
-                
-                if len(results_df) == 0:
-                    st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
-                    st.session_state.similar_search_results = None
-                    st.session_state.similar_search_page = 0
-                    return
-                
-                # 儲存搜尋結果到 session state
-                st.session_state.similar_search_results = results_df
-                st.session_state.similar_search_query = query_text
+            
+            status_container.info("正在搜尋相似貼文...")
+            
+            # 執行搜尋（傳入 random_search 參數）
+            results_df = st.session_state.similar_detector.search_similar_posts(
+                query_text=st.session_state.similar_search_query,
+                limit=limit,
+                threshold=threshold,
+                random_search=random_search
+            )
+            
+            st.session_state.search_in_progress = False
+            status_container.empty()
+            
+            if len(results_df) == 0:
+                st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
+                st.session_state.similar_search_results = None
                 st.session_state.similar_search_page = 0
-                
-                st.success(f"找到 {len(results_df)} 則相似貼文")
-                st.rerun()
-                
+                return
+            
+            # 儲存搜尋結果到 session state
+            st.session_state.similar_search_results = results_df
+            st.session_state.similar_search_page = 0
+            
+            st.success(f"找到 {len(results_df)} 則相似貼文")
+            st.rerun()
+            
         except Exception as e:
+            st.session_state.search_in_progress = False
+            status_container.empty()
             st.error(f"搜尋時發生錯誤：{str(e)}")
             logger.error(f"相似貼文搜尋錯誤：{str(e)}")
             # 如果發生錯誤，清理 detector
@@ -1218,6 +1287,10 @@ def show_similar_posts_search():
                 st.error(f"清理資源時發生錯誤：{str(e)}")
         else:
             st.info("沒有需要清理的資源")
+        
+        # 重置搜尋狀態
+        st.session_state.search_in_progress = False
+        st.session_state.stop_search = False
     
     # 如果有搜尋結果，顯示分頁內容
     if st.session_state.similar_search_results is not None:
