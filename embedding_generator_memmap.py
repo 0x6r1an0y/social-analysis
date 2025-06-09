@@ -433,7 +433,7 @@ class EmbeddingGeneratorMemmap:
                           f"資料儲存 {save_time:.2f}s ({save_time/total_batch_time*100:.1f}%)")
                 
                 # 定期保存索引
-                if processed % (self.batch_size * 10) == 0:
+                if processed % (self.batch_size * 3) == 0:  # 每 3 個批次儲存一次
                     self._save_index()
                     self._save_metadata()
                     logger.info("📝 已保存索引和 metadata")
@@ -584,7 +584,7 @@ def main():
     try:
         # 創建 embedding 生成器
         generator = EmbeddingGeneratorMemmap(
-            batch_size=32768,  # 調高到 32768 來進一步測試GPU極限
+            batch_size=65536,  # 調整到 65536 以提升處理效率
             embeddings_dir="embeddings_data",
             source_table="posts_deduplicated",  # 指定來源表
             device="auto"  # 使用自動偵測裝置
