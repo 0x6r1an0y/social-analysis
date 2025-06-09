@@ -6,6 +6,30 @@ import logging
 import datetime
 import subprocess
 import os
+from logging import Filter, Formatter
+import socket
+
+# 自定義的 IP 過濾器
+class IPFilter(Filter):
+    def filter(self, record):
+        try:
+            # 使用 st.context.headers 獲取請求標頭
+            headers = st.context.headers if hasattr(st, 'context') else None
+            if headers:
+                # 嘗試從 X-Forwarded-For 獲取真實 IP（適用於 ngrok）
+                ip = headers.get('X-Forwarded-For', '').split(',')[0].strip()
+                if not ip:
+                    # 如果沒有 X-Forwarded-For，則使用 X-Real-IP
+                    ip = headers.get('X-Real-IP', '')
+                if not ip:
+                    # 如果都沒有，則使用 Remote-Addr
+                    ip = headers.get('Remote-Addr', '')
+                record.ip = ip
+            else:
+                record.ip = 'unknown'
+        except:
+            record.ip = 'unknown'
+        return True
 
 # 建立 logs 目錄（如果不存在）
 if not os.path.exists('logs'):
@@ -15,16 +39,35 @@ if not os.path.exists('logs'):
 current_date = datetime.datetime.now().strftime('%Y-%m-%d')
 log_filename = f'logs/candidates_label_{current_date}.log'
 
-# 設定 logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_filename, encoding='utf-8'),
-        logging.StreamHandler()  # 同時輸出到控制台
-    ]
+# 建立自定義的格式化器
+formatter = Formatter(
+    fmt='%(asctime)s [%(ip)s] - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger(__name__)
+
+# 設定檔案處理器
+file_handler = logging.FileHandler(log_filename, encoding='utf-8', mode='a')
+file_handler.setFormatter(formatter)
+
+# 設定控制台處理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
+# 設定根 logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# 移除所有現有的處理器
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+# 添加自定義的處理器
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# 添加 IP 過濾器
+ip_filter = IPFilter()
+logger.addFilter(ip_filter)
 
 # 記錄程式啟動
 logger.info("程式啟動")
