@@ -1,3 +1,25 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+詐騙貼文檢測工具 (Memmap 版本)
+
+參數調整指南：
+1. batch_size: 批次處理大小
+   - 100-200: 記憶體有限環境
+   - 500-1000: 一般使用（推薦）
+   - 2000-5000: 記憶體充足環境
+   - 10000+: 高性能環境
+
+2. 調整方式：
+   - 命令列: --batch-size 500
+   - 程式碼: batch_size=500
+   - 預設值: 1024
+
+3. 記憶體監控：
+   - 程式會自動監控記憶體使用
+   - 超過 85% 時會強制垃圾回收
+   - 建議先測試較小批次大小
+"""
 from sqlalchemy import create_engine, text
 from sentence_transformers import SentenceTransformer, util
 import pandas as pd
@@ -8,31 +30,47 @@ import json
 import argparse
 from typing import List, Dict, Optional
 import time
+import psutil  # 添加記憶體監控
+import gc  # 添加垃圾回收
 
 # 設定 logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def get_memory_usage():
+    """獲取當前記憶體使用情況"""
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    return {
+        'rss_mb': memory_info.rss / 1024 / 1024,  # RSS in MB
+        'vms_mb': memory_info.vms / 1024 / 1024,  # VMS in MB
+        'percent': process.memory_percent()
+    }
+
 class ScamDetectorMemmap:
     def __init__(self, 
                  db_url: str = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash",
                  model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
-                 batch_size: int = 1000,
-                 embeddings_dir: str = "embeddings_data"):
+                 batch_size: int = 1024,  # 修改為合理的預設值
+                 embeddings_dir: str = "embeddings_data",
+                 memory_optimized: bool = True):  # 新增記憶體優化選項
         """
         初始化詐騙檢測器 (使用 memmap 存儲)
         
         Args:
             db_url: 資料庫連接字串
             model_name: 使用的 sentence-transformers 模型
-            batch_size: 批次處理大小
+            batch_size: 批次處理大小（建議 200-1000）
             embeddings_dir: embeddings 存儲目錄
+            memory_optimized: 是否啟用記憶體優化模式
         """
         self.db_url = db_url
         self.batch_size = batch_size
         self.embeddings_dir = embeddings_dir
+        self.memory_optimized = memory_optimized
         self.engine = None
         self.model = None
+        self.embeddings_array = None  # 全局 memmap 物件
         
         # 預設詐騙提示詞
         self.default_scam_phrases = [
@@ -55,6 +93,7 @@ class ScamDetectorMemmap:
         self._init_db_connection()
         self._load_model(model_name)
         self._load_embeddings_metadata()
+        self._init_embeddings_memmap()  # 添加全局 memmap 初始化
         
     def _init_db_connection(self):
         """初始化資料庫連接"""
@@ -104,19 +143,31 @@ class ScamDetectorMemmap:
             logger.error(f"載入 embeddings metadata 失敗: {str(e)}")
             raise
             
+    def _init_embeddings_memmap(self):
+        """初始化 embeddings memmap"""
+        try:
+            # 直接使用 metadata 中的總記錄數，避免重複查詢資料庫
+            total_records = self.total_embeddings
+            
+            # 使用 memmap 載入 embeddings 檔案
+            self.embeddings_array = np.memmap(
+                self.embeddings_file,
+                dtype=np.float32,
+                mode='r',
+                shape=(total_records, self.embedding_dim)
+            )
+            
+        except Exception as e:
+            logger.error(f"初始化 embeddings memmap 失敗: {str(e)}")
+            raise
+            
     def _get_embeddings_array(self) -> np.ndarray:
         """獲取 embeddings memmap 陣列"""
         try:
-            # 獲取資料庫總記錄數來確定正確的 shape
-            with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT COUNT(*) 
-                    FROM posts 
-                    WHERE content IS NOT NULL 
-                    AND content != ''
-                """))
-                total_records = result.scalar()
-                
+            # 直接使用 metadata 中的總記錄數，避免重複查詢資料庫
+            total_records = self.total_embeddings
+            
+            # 使用 memmap 載入 embeddings 檔案
             embeddings_array = np.memmap(
                 self.embeddings_file,
                 dtype=np.float32,
@@ -134,7 +185,7 @@ class ScamDetectorMemmap:
         """獲取批次貼文資料（包含有 embeddings 的貼文）"""
         try:
             if limit is None:
-                limit = self.batch_size
+                limit = self.batch_size  # 使用實際的 batch_size，移除 50 筆限制
                 
             # 只獲取有 embeddings 的貼文
             valid_pos_tids = list(self.pos_tid_to_index.keys())
@@ -150,11 +201,11 @@ class ScamDetectorMemmap:
             if not batch_pos_tids:
                 return pd.DataFrame()
                 
-            # 構建 SQL 查詢
+            # 構建 SQL 查詢 - 改為從 posts_deduplicated 表查詢
             placeholders = ','.join([f"'{pid}'" for pid in batch_pos_tids])
             sql = f"""
                 SELECT pos_tid, content, page_name, created_time
-                FROM posts 
+                FROM posts_deduplicated 
                 WHERE pos_tid IN ({placeholders})
                 ORDER BY pos_tid
             """
@@ -166,16 +217,22 @@ class ScamDetectorMemmap:
             logger.error(f"獲取貼文資料時發生錯誤: {str(e)}")
             raise
             
-    def _get_embeddings_for_pos_tids(self, pos_tids: List[str]) -> Dict[str, np.ndarray]:
-        """獲取指定 pos_tids 的 embeddings"""
+    def _get_embeddings_for_pos_tids_optimized(self, pos_tids: List[str], batch_size: int = 100) -> Dict[str, np.ndarray]:
+        """優化版本：分批獲取指定 pos_tids 的 embeddings（使用全局 memmap）"""
         try:
-            embeddings_array = self._get_embeddings_array()
+            # 檢查記憶體使用情況
+            current_memory = get_memory_usage()
+            if current_memory['percent'] > 85:
+                logger.warning(f"記憶體使用過高: {current_memory['percent']:.1f}%，強制垃圾回收")
+                gc.collect()
+            
             result = {}
             
+            # 使用全局 memmap 物件
             for pos_tid in pos_tids:
                 if pos_tid in self.pos_tid_to_index:
                     index = self.pos_tid_to_index[pos_tid]
-                    result[pos_tid] = embeddings_array[index].copy()
+                    result[pos_tid] = self.embeddings_array[index].copy()
                     
             return result
             
@@ -183,6 +240,74 @@ class ScamDetectorMemmap:
             logger.error(f"獲取 embeddings 時發生錯誤: {str(e)}")
             raise
             
+    def calculate_scam_scores_with_top_k(self, 
+                                        pos_tids: List[str],
+                                        content_embeddings: Dict[str, np.ndarray],
+                                        scam_phrases: Optional[List[str]] = None,
+                                        top_k: int = 5) -> Dict[str, Dict]:
+        """
+        計算詐騙分數並返回 top_k 相似度
+        
+        Args:
+            pos_tids: 貼文 ID 列表
+            content_embeddings: 貼文 embeddings 字典
+            scam_phrases: 詐騙提示詞列表
+            top_k: 返回前 k 個最相似的短語
+            
+        Returns:
+            包含詐騙分數和 top_k 相似度的字典
+        """
+        if scam_phrases is None:
+            scam_phrases = self.default_scam_phrases
+            
+        try:
+            # 生成詐騙提示詞的 embeddings
+            phrase_embeddings = self.model.encode(scam_phrases, convert_to_tensor=True)
+            
+            # 獲取模型所在的 device
+            device = phrase_embeddings.device
+            
+            results = {}
+            
+            for pos_tid in pos_tids:
+                if pos_tid not in content_embeddings:
+                    results[pos_tid] = {
+                        'scam_score': 0.0,
+                        'top_k_similarities': []
+                    }
+                    continue
+                    
+                content_emb = content_embeddings[pos_tid]
+                
+                # 直接使用預計算的 embedding 來計算相似度，指定正確的 device
+                from torch import tensor
+                content_tensor = tensor(content_emb, device=device).unsqueeze(0)
+                similarities = util.cos_sim(content_tensor, phrase_embeddings).squeeze().cpu().numpy()
+                
+                # 獲取 top_k 相似度
+                top_indices = np.argsort(similarities)[::-1][:top_k]
+                top_similarities = []
+                
+                for idx in top_indices:
+                    top_similarities.append({
+                        'phrase': scam_phrases[idx],
+                        'similarity': float(similarities[idx])
+                    })
+                
+                # 取最大相似度作為詐騙分數
+                score = float(np.max(similarities))
+                
+                results[pos_tid] = {
+                    'scam_score': score,
+                    'top_k_similarities': top_similarities
+                }
+                
+            return results
+            
+        except Exception as e:
+            logger.error(f"計算詐騙分數時發生錯誤: {str(e)}")
+            raise
+
     def calculate_scam_scores(self, 
                             pos_tids: List[str],
                             content_embeddings: Dict[str, np.ndarray],
@@ -205,6 +330,9 @@ class ScamDetectorMemmap:
             # 生成詐騙提示詞的 embeddings
             phrase_embeddings = self.model.encode(scam_phrases, convert_to_tensor=True)
             
+            # 獲取模型所在的 device
+            device = phrase_embeddings.device
+            
             scam_scores = {}
             
             for pos_tid in pos_tids:
@@ -214,15 +342,9 @@ class ScamDetectorMemmap:
                     
                 content_emb = content_embeddings[pos_tid]
                 
-                # 轉換為 tensor 並計算相似度
-                content_tensor = util.pytorch_cos_sim(
-                    self.model.encode("dummy", convert_to_tensor=True).unsqueeze(0),  # 獲取正確的 tensor 格式
-                    phrase_embeddings
-                )[0:1, :]  # 保持維度
-                
-                # 直接使用預計算的 embedding 來計算相似度
+                # 直接使用預計算的 embedding 來計算相似度，指定正確的 device
                 from torch import tensor
-                content_tensor = tensor(content_emb).unsqueeze(0)
+                content_tensor = tensor(content_emb, device=device).unsqueeze(0)
                 similarities = util.cos_sim(content_tensor, phrase_embeddings).squeeze().cpu().numpy()
                 
                 # 取最大相似度作為詐騙分數
@@ -239,7 +361,9 @@ class ScamDetectorMemmap:
                            scam_phrases: Optional[List[str]] = None,
                            threshold: float = 0.6,
                            output_file: Optional[str] = None,
-                           max_results: Optional[int] = None) -> pd.DataFrame:
+                           max_results: Optional[int] = None,
+                           top_k: int = 5,
+                           return_top_k: bool = False) -> pd.DataFrame:
         """
         批次檢測詐騙貼文
         
@@ -248,6 +372,8 @@ class ScamDetectorMemmap:
             threshold: 詐騙風險閾值
             output_file: 輸出檔案路徑
             max_results: 最大結果數量
+            top_k: 返回前 k 個最相似的短語
+            return_top_k: 是否返回 top_k 相似度
             
         Returns:
             包含詐騙分數的 DataFrame
@@ -257,10 +383,16 @@ class ScamDetectorMemmap:
             
         logger.info(f"使用的詐騙提示詞: {scam_phrases}")
         logger.info(f"詐騙風險閾值: {threshold}")
+        if return_top_k:
+            logger.info(f"將返回前 {top_k} 個最相似的短語")
         
         try:
             total_posts = len(self.pos_tid_to_index)
             logger.info(f"待檢測的貼文總數: {total_posts}")
+            
+            # 顯示初始記憶體使用情況
+            initial_memory = get_memory_usage()
+            logger.info(f"初始記憶體使用: {initial_memory['rss_mb']:.1f} MB ({initial_memory['percent']:.1f}%)")
             
             all_results = []
             processed = 0
@@ -279,17 +411,28 @@ class ScamDetectorMemmap:
                 
                 # 獲取這批次的 embeddings
                 pos_tids = df['pos_tid'].tolist()
-                embeddings_dict = self._get_embeddings_for_pos_tids(pos_tids)
+                embeddings_dict = self._get_embeddings_for_pos_tids_optimized(pos_tids)
                 
                 # 計算詐騙分數
-                scam_scores_dict = self.calculate_scam_scores(
-                    pos_tids,
-                    embeddings_dict,
-                    scam_phrases
-                )
+                if return_top_k:
+                    scam_scores_dict = self.calculate_scam_scores_with_top_k(
+                        pos_tids,
+                        embeddings_dict,
+                        scam_phrases,
+                        top_k
+                    )
+                    
+                    # 添加分數和 top_k 相似度到 DataFrame
+                    df['scam_score'] = df['pos_tid'].map(lambda x: scam_scores_dict.get(x, {}).get('scam_score', 0.0))
+                    df['top_k_similarities'] = df['pos_tid'].map(lambda x: scam_scores_dict.get(x, {}).get('top_k_similarities', []))
+                else:
+                    scam_scores_dict = self.calculate_scam_scores(
+                        pos_tids,
+                        embeddings_dict,
+                        scam_phrases
+                    )
+                    df['scam_score'] = df['pos_tid'].map(scam_scores_dict).fillna(0.0)
                 
-                # 添加分數到 DataFrame
-                df['scam_score'] = df['pos_tid'].map(scam_scores_dict).fillna(0.0)
                 df['is_potential_scam'] = df['scam_score'] >= threshold
                 
                 # 只保留可能的詐騙貼文
@@ -308,6 +451,14 @@ class ScamDetectorMemmap:
                 elapsed_time = time.time() - start_time
                 logger.info(f"已處理 {processed}/{total_posts} 筆，發現 {len(high_risk_posts)} 筆可疑貼文 - 耗時: {elapsed_time:.2f}秒")
                 
+                # 每處理 10 個批次檢查一次記憶體
+                if processed % (self.batch_size * 10) == 0:
+                    current_memory = get_memory_usage()
+                    logger.info(f"已處理 {processed}/{total_posts} 筆，記憶體使用: {current_memory['rss_mb']:.1f} MB")
+                    
+                    # 強制垃圾回收
+                    gc.collect()
+                
             # 合併所有結果
             if all_results:
                 final_results = pd.concat(all_results, ignore_index=True)
@@ -320,7 +471,17 @@ class ScamDetectorMemmap:
                 
                 # 輸出結果
                 if output_file:
-                    final_results.to_csv(output_file, index=False, encoding='utf-8-sig')
+                    # 如果包含 top_k 相似度，需要特殊處理輸出
+                    if return_top_k and 'top_k_similarities' in final_results.columns:
+                        # 創建一個新的 DataFrame 來處理 top_k 相似度
+                        output_df = final_results.copy()
+                        # 將 top_k_similarities 轉換為可讀的格式
+                        output_df['top_k_similarities'] = output_df['top_k_similarities'].apply(
+                            lambda x: '; '.join([f"{item['phrase']}({item['similarity']:.3f})" for item in x])
+                        )
+                        output_df.to_csv(output_file, index=False, encoding='utf-8-sig')
+                    else:
+                        final_results.to_csv(output_file, index=False, encoding='utf-8-sig')
                     logger.info(f"結果已儲存到: {output_file}")
                     
                 return final_results
@@ -332,13 +493,14 @@ class ScamDetectorMemmap:
             logger.error(f"批次檢測時發生錯誤: {str(e)}")
             raise
             
-    def detect_single_post(self, content: str, scam_phrases: Optional[List[str]] = None) -> Dict:
+    def detect_single_post(self, content: str, scam_phrases: Optional[List[str]] = None, top_k: int = 5) -> Dict:
         """
         檢測單一貼文
         
         Args:
             content: 貼文內容
             scam_phrases: 詐騙提示詞
+            top_k: 返回前 k 個最相似的短語
             
         Returns:
             包含詐騙分數和詳細資訊的字典
@@ -371,7 +533,7 @@ class ScamDetectorMemmap:
                 'content': content,
                 'scam_score': scam_score,
                 'is_potential_scam': scam_score >= 0.6,
-                'top_matching_phrases': top_matches[:5],
+                'top_matching_phrases': top_matches[:top_k],
                 'risk_level': self._get_risk_level(scam_score)
             }
             
@@ -413,6 +575,9 @@ class ScamDetectorMemmap:
             # 生成關鍵字 embeddings
             keyword_embeddings = self.model.encode(keywords, convert_to_tensor=True)
             
+            # 獲取模型所在的 device
+            device = keyword_embeddings.device
+            
             results = []
             processed = 0
             offset = 0
@@ -426,17 +591,17 @@ class ScamDetectorMemmap:
                     
                 # 獲取 embeddings
                 pos_tids = df['pos_tid'].tolist()
-                embeddings_dict = self._get_embeddings_for_pos_tids(pos_tids)
+                embeddings_dict = self._get_embeddings_for_pos_tids_optimized(pos_tids)
                 
                 for _, row in df.iterrows():
                     pos_tid = row['pos_tid']
                     if pos_tid not in embeddings_dict:
                         continue
                         
-                    # 計算與關鍵字的相似度
+                    # 計算與關鍵字的相似度，指定正確的 device
                     content_emb = embeddings_dict[pos_tid]
                     from torch import tensor
-                    content_tensor = tensor(content_emb).unsqueeze(0)
+                    content_tensor = tensor(content_emb, device=device).unsqueeze(0)
                     similarities = util.cos_sim(content_tensor, keyword_embeddings).squeeze().cpu().numpy()
                     max_similarity = float(np.max(similarities))
                     
@@ -472,9 +637,16 @@ class ScamDetectorMemmap:
             'embedding_dimension': self.embedding_dim,
             'embeddings_file_size_mb': os.path.getsize(self.embeddings_file) / 1024 / 1024 if os.path.exists(self.embeddings_file) else 0,
             'model_name': self.metadata.get('model_name', 'Unknown'),
-            'last_updated': self.metadata.get('last_updated', 'Unknown')
+            'last_updated': self.metadata.get('last_updated', 'Unknown'),
+            'batch_size': self.batch_size
         }
         return stats
+        
+    def __del__(self):
+        """清理資源"""
+        if hasattr(self, 'embeddings_array') and self.embeddings_array is not None:
+            del self.embeddings_array
+            logger.info("已清理 memmap 資源")
 
 def main():
     """主要執行函數"""
@@ -485,15 +657,21 @@ def main():
     parser.add_argument('--keywords', nargs='+', help='搜尋關鍵字 (search 模式使用)')
     parser.add_argument('--threshold', type=float, default=0.6, help='詐騙風險閾值')
     parser.add_argument('--output', type=str, help='輸出檔案路徑')
-    parser.add_argument('--limit', type=int, default=1000, help='最大結果數量')
+    parser.add_argument('--limit', type=int, default=500, help='最大結果數量')
     parser.add_argument('--scam-phrases', nargs='+', help='自定義詐騙提示詞')
     parser.add_argument('--embeddings-dir', type=str, default='embeddings_data', help='Embeddings 存儲目錄')
+    parser.add_argument('--batch-size', type=int, default=131072, help='批次大小（建議 200-1000）')
+    parser.add_argument('--top-k', type=int, default=5, help='返回前 k 個最相似的短語')
+    parser.add_argument('--return-top-k', action='store_true', help='是否返回 top_k 相似度 (batch 模式)')
     
     args = parser.parse_args()
     
     try:
         # 創建檢測器
-        detector = ScamDetectorMemmap(embeddings_dir=args.embeddings_dir)
+        detector = ScamDetectorMemmap(
+            embeddings_dir=args.embeddings_dir,
+            batch_size=args.batch_size
+        )
         
         # 顯示統計資訊
         stats = detector.get_statistics()
@@ -505,12 +683,19 @@ def main():
                 scam_phrases=args.scam_phrases,
                 threshold=args.threshold,
                 output_file=args.output,
-                max_results=args.limit
+                max_results=args.limit,
+                top_k=args.top_k,
+                return_top_k=args.return_top_k
             )
             
             if not results.empty:
                 print(f"\n🎯 發現 {len(results)} 筆可疑詐騙貼文:")
-                print(results[['pos_tid', 'page_name', 'scam_score', 'content']].head(10).to_string())
+                if args.return_top_k and 'top_k_similarities' in results.columns:
+                    # 顯示包含 top_k 相似度的結果
+                    display_columns = ['pos_tid', 'page_name', 'scam_score', 'top_k_similarities', 'content']
+                    print(results[display_columns].head(10).to_string())
+                else:
+                    print(results[['pos_tid', 'page_name', 'scam_score', 'content']].head(10).to_string())
                 
         elif args.mode == 'single':
             if not args.content:
@@ -518,14 +703,14 @@ def main():
                 return
                 
             # 單一貼文檢測
-            result = detector.detect_single_post(args.content, args.scam_phrases)
+            result = detector.detect_single_post(args.content, args.scam_phrases, args.top_k)
             
             print(f"\n📝 貼文內容: {result['content']}")
             print(f"🎯 詐騙分數: {result['scam_score']:.3f}")
             print(f"⚠️  風險等級: {result['risk_level']}")
             print(f"🚨 是否可疑: {'是' if result['is_potential_scam'] else '否'}")
-            print("\n🔍 最相似的詐騙短語:")
-            for match in result['top_matching_phrases'][:3]:
+            print(f"\n🔍 前 {args.top_k} 個最相似的詐騙短語:")
+            for match in result['top_matching_phrases']:
                 print(f"  - {match['phrase']}: {match['similarity']:.3f}")
                 
         elif args.mode == 'search':
