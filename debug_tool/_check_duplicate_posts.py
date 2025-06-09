@@ -2,6 +2,8 @@ from sqlalchemy import create_engine, text
 import time
 import pandas as pd
 
+top_k = 20 # 顯示前20組重複的貼文
+
 def check_duplicate_posts():
     # 資料庫連線資訊
     db_name = "social_media_analysis_hash"
@@ -43,6 +45,39 @@ def check_duplicate_posts():
                 print("錯誤：沒有找到有效的雜湊值！請先執行 add_content_hash.py")
                 return
             
+            # 計算統計資訊
+            stats = conn.execute(text("""
+                WITH stats AS (
+                    SELECT 
+                        COUNT(*) as total_posts,
+                        COUNT(CASE WHEN content_hash IS NOT NULL AND content_hash != '' THEN 1 END) as valid_hashes,
+                        COUNT(DISTINCT content_hash) as unique_hashes
+                    FROM posts
+                    WHERE content_hash IS NOT NULL 
+                    AND content_hash != ''
+                )
+                SELECT 
+                    total_posts,
+                    valid_hashes,
+                    unique_hashes,
+                    (valid_hashes - unique_hashes) as duplicate_posts,
+                    (valid_hashes - unique_hashes)::float / valid_hashes * 100 as duplicate_rate
+                FROM stats
+            """)).fetchone()
+            
+            total_posts = stats[0]
+            valid_hashes = stats[1]
+            unique_hashes = stats[2]
+            duplicate_posts = stats[3]
+            duplicate_rate = stats[4]
+            
+            print(f"\n=== 重複貼文統計結果 ===")
+            print(f"總貼文數量: {total_posts:,}")
+            print(f"有效雜湊值的貼文: {valid_hashes:,}")
+            print(f"不重複的貼文數量: {unique_hashes:,}")
+            print(f"重複的貼文數量: {duplicate_posts:,}")
+            print(f"重複率: {duplicate_rate:.2f}%")
+            
             # 檢查重複的雜湊值
             print("\n正在分析重複的貼文...")
             duplicate_analysis = conn.execute(text("""
@@ -61,14 +96,14 @@ def check_duplicate_posts():
                 print("沒有發現重複的貼文內容！")
                 return
             
-            # 計算統計資訊
+            # 計算重複組數的統計資訊
             unique_duplicate_groups = len(duplicate_analysis)  # 有多少組重複的貼文
             total_duplicate_posts = sum(row[1] for row in duplicate_analysis)  # 總共有多少篇重複的貼文
             
-            print(f"\n=== 重複貼文統計結果 ===")
+            print(f"\n=== 重複組數統計 ===")
             print(f"重複的貼文組數: {unique_duplicate_groups:,} 組")
             print(f"總重複貼文數量: {total_duplicate_posts:,} 篇")
-            print(f"重複率: {(total_duplicate_posts/valid_hashes)*100:.2f}%")
+            print(f"平均每組重複次數: {total_duplicate_posts/unique_duplicate_groups:.2f} 次")
             
             # 顯示前10組重複最多的內容
             print(f"\n=== 重複最多的前10組貼文 ===")
@@ -93,7 +128,7 @@ def check_duplicate_posts():
             # 詳細分析選項
             show_details = input("\n是否要查看重複貼文的詳細內容？(y/n): ").strip().lower()
             if show_details in ['y', 'yes', '是']:
-                show_detail_analysis(conn, duplicate_analysis[:5])  # 只顯示前5組
+                show_detail_analysis(conn, duplicate_analysis[:top_k])  # 只顯示前20組
         
         total_time = time.time() - start_time
         print(f"\n分析完成！總耗時: {total_time:.2f} 秒")
@@ -104,7 +139,7 @@ def check_duplicate_posts():
 
 def show_detail_analysis(conn, top_duplicates):
     """顯示重複貼文的詳細內容"""
-    print(f"\n=== 重複貼文詳細內容 (前5組) ===")
+    print(f"\n=== 重複貼文詳細內容 (前20組) ===")
     
     for i, (content_hash, count) in enumerate(top_duplicates, 1):
         print(f"\n--- 第 {i} 組 (重複 {count} 次) ---")
@@ -115,18 +150,18 @@ def show_detail_analysis(conn, top_duplicates):
                 pos_tid, 
                 page_name, 
                 created_time,
-                LEFT(content, 100) as content_preview
+                content
             FROM posts 
             WHERE content_hash = :hash 
             ORDER BY created_time
             LIMIT 3
         """), {"hash": content_hash}).fetchall()
         
-        for j, (pos_tid, page_name, created_time, content_preview) in enumerate(details, 1):
+        for j, (pos_tid, page_name, created_time, content) in enumerate(details, 1):
             print(f"  {j}. ID: {pos_tid}")
             print(f"     頁面: {page_name}")
             print(f"     時間: {created_time}")
-            print(f"     內容預覽: {content_preview}...")
+            print(f"     完整內容: {content}")
             print()
         
         if count > 3:
