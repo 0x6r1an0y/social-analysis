@@ -31,7 +31,7 @@ logger.info("程式啟動")
 
 # 設定資料庫連線（標記資料）
 LABELING_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
-SOURCE_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
+SOURCE_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
 
 # 建立兩個資料庫的連線引擎
 labeling_engine = create_engine(LABELING_DB_URL)
@@ -112,7 +112,7 @@ def save_label_only(pos_tid: str, label: str, note: str, group_id: int) -> None:
             # 如果是關鍵字搜尋且貼文不存在，則從原始資料庫獲取內容並新增記錄
             try:
                 # 先從原始資料庫獲取貼文內容
-                source_query = "SELECT pos_tid, content FROM posts WHERE pos_tid = :pos_tid"
+                source_query = "SELECT pos_tid, content FROM posts_deduplicated WHERE pos_tid = :pos_tid"
                 with source_engine.connect() as source_conn:
                     source_result = source_conn.execute(text(source_query), {"pos_tid": pos_tid})
                     post_data = source_result.fetchone()
@@ -483,7 +483,7 @@ def show_post_search() -> None:
             query = """
                 SELECT pos_tid, content, created_time, date, post_type, page_name, 
                        reaction_all, comment_count, share_count
-                FROM posts 
+                FROM posts_deduplicated 
                 WHERE pos_tid = :pos_tid
             """
             try:
