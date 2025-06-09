@@ -17,7 +17,8 @@ class EmbeddingGenerator:
     def __init__(self, 
                  db_url: str = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash",
                  model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
-                 batch_size: int = 1000):
+                 batch_size: int = 1000,
+                 source_table: str = "posts_deduplicated"):
         """
         初始化 Embedding 生成器
         
@@ -25,9 +26,11 @@ class EmbeddingGenerator:
             db_url: 資料庫連接字串
             model_name: 使用的 sentence-transformers 模型
             batch_size: 批次處理大小
+            source_table: 來源資料表名稱
         """
         self.db_url = db_url
         self.batch_size = batch_size
+        self.source_table = source_table
         self.engine = None
         self.model = None
         
@@ -53,19 +56,19 @@ class EmbeddingGenerator:
         try:
             with self.engine.connect() as conn:
                 # 檢查是否存在 content_emb 欄位
-                result = conn.execute(text("""
+                result = conn.execute(text(f"""
                     SELECT column_name 
                     FROM information_schema.columns 
-                    WHERE table_name = 'posts' AND column_name = 'content_emb'
+                    WHERE table_name = '{self.source_table}' AND column_name = 'content_emb'
                 """))
                 
                 if not result.fetchone():
                     # 新增 content_emb 欄位
-                    conn.execute(text("ALTER TABLE posts ADD COLUMN content_emb BYTEA"))
+                    conn.execute(text(f"ALTER TABLE {self.source_table} ADD COLUMN content_emb BYTEA"))
                     conn.commit()
-                    logger.info("✅ 已新增 content_emb 欄位")
+                    logger.info(f"✅ 已新增 {self.source_table} 的 content_emb 欄位")
                 else:
-                    logger.info("✅ content_emb 欄位已存在")
+                    logger.info(f"✅ {self.source_table} 的 content_emb 欄位已存在")
                     
         except Exception as e:
             logger.error(f"檢查/新增欄位時發生錯誤: {str(e)}")
@@ -74,9 +77,9 @@ class EmbeddingGenerator:
     def _get_posts_without_embeddings(self, offset: int = 0) -> pd.DataFrame:
         """獲取還沒有 embedding 的貼文"""
         try:
-            sql = """
+            sql = f"""
                 SELECT pos_tid, content 
-                FROM posts 
+                FROM {self.source_table}
                 WHERE content_emb IS NULL 
                 AND content IS NOT NULL 
                 AND content != ''
@@ -112,8 +115,8 @@ class EmbeddingGenerator:
                     embedding_bytes = pickle.dumps(embedding.astype(np.float32))
                     
                     # 更新資料庫
-                    conn.execute(text("""
-                        UPDATE posts 
+                    conn.execute(text(f"""
+                        UPDATE {self.source_table}
                         SET content_emb = :embedding_bytes 
                         WHERE pos_tid = :pos_tid
                     """), {
@@ -131,9 +134,9 @@ class EmbeddingGenerator:
         """獲取需要處理的貼文總數"""
         try:
             with self.engine.connect() as conn:
-                result = conn.execute(text("""
+                result = conn.execute(text(f"""
                     SELECT COUNT(*) 
-                    FROM posts 
+                    FROM {self.source_table}
                     WHERE content_emb IS NULL 
                     AND content IS NOT NULL 
                     AND content != ''
@@ -202,9 +205,9 @@ class EmbeddingGenerator:
         try:
             # 測試資料庫
             with self.engine.connect() as conn:
-                result = conn.execute(text("SELECT COUNT(*) FROM posts"))
+                result = conn.execute(text(f"SELECT COUNT(*) FROM {self.source_table}"))
                 total_posts = result.scalar()
-                logger.info(f"資料庫連接正常，posts 表格共有 {total_posts} 筆資料")
+                logger.info(f"資料庫連接正常，{self.source_table} 表格共有 {total_posts} 筆資料")
                 
             # 測試模型
             test_text = "這是一個測試文本"
@@ -222,7 +225,8 @@ def main():
     try:
         # 創建 embedding 生成器
         generator = EmbeddingGenerator(
-            batch_size=500  # 可以根據記憶體情況調整
+            batch_size=500,  # 可以根據記憶體情況調整
+            source_table="posts_deduplicated"  # 指定來源表
         )
         
         # 測試連接
