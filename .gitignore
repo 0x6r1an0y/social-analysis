@@ -14,3 +14,11 @@ QSearch_Question.txt
 *.png
 *.dat
 *.json
+*.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+*.env.development
+*.env.tes
+*.new
