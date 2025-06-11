@@ -1,7 +1,7 @@
 import pandas as pd
 import jieba
 import jieba.analyse
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 import matplotlib.pyplot as plt
 from collections import Counter
 import seaborn as sns

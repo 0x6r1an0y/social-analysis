@@ -4,9 +4,8 @@ import pandas as pd
 import numpy as np
 import pickle
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import argparse
-import json
 
 # 設定 logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

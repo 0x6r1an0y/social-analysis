@@ -2,8 +2,7 @@
 *.zip
 *.xls
 *.xlsx
-*.log
-log.txt
+logs/
 .vscode/
 *.exe
 __pycache__/
@@ -23,3 +22,4 @@ QSearch_Question.txt
 *.env.tes
 *.new
 *.jpg
+*.md

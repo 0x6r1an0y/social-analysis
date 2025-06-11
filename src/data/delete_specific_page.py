@@ -1,5 +1,4 @@
 from sqlalchemy import create_engine, text
-import os
 
 def check_database_fields():
     """連接資料庫並查詢 page_name、page_category 和 post_type 欄位的內容"""

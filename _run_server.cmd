@@ -1,1 +1,2 @@
-streamlit run candidates_label_server.py
+streamlit run src/web/candidates_label_server.py
+PAUSE

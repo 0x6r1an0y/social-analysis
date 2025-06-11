@@ -1,11 +1,9 @@
 import json
-from psycopg2 import sql
 from dotenv import load_dotenv
 import os
 from datetime import datetime
 from sqlalchemy import create_engine, text
-
-from module.LLM_responder import LLM_responder
+from utils import LLM_responder
 
 load_dotenv()
 

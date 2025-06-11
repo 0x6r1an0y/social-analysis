@@ -1,5 +1,4 @@
 from sqlalchemy import create_engine, text
-import os
 
 def preview_short_content_posts(max_length=30):
     """

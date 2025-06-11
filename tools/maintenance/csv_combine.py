@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 # 設定資料夾路徑（請自行修改）
-folder_path = './csv'
+folder_path = '../../data/csv'
 # 合併後要儲存的檔案名稱
 output_file = 'merged_output.csv'
 

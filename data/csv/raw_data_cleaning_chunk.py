@@ -1,3 +1,4 @@
+# 分批處理
 import pandas as pd
 
 chunk_size = 10**6  # 一百萬筆

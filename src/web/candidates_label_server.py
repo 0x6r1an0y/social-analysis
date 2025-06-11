@@ -1,13 +1,10 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
-from candidates_dataloader_to_sql import fetch_candidate_posts
 import logging
 import datetime
 import subprocess
-import os
 from logging import Filter, Formatter
-import socket
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
 import json
@@ -18,7 +15,25 @@ from typing import List, Dict, Optional
 import random
 import atexit
 import multiprocessing as mp
-from multiprocessing import Process, Queue, Manager
+from multiprocessing import Process, Queue
+
+# ==========================================
+# 代表執行目錄在_run_server.cmd的目錄
+import sys
+import os
+
+# 添加 src 目錄到 Python 路徑
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)  # 回到 src 目錄
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+from data.candidates_dataloader_to_sql import fetch_candidate_posts
+# ==========================================
+
+EMBEDDINGS_DIR = "data"
+
+# ==========================================
 
 # 自定義的 IP 過濾器
 class IPFilter(Filter):
@@ -173,7 +188,7 @@ class ScamDetectorMemmap:
                  db_url: str = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash",
                  model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
                  batch_size: int = 8192,
-                 embeddings_dir: str = "embeddings_data",
+                 embeddings_dir: str = EMBEDDINGS_DIR,
                  memory_optimized: bool = True):
         """
         初始化詐騙檢測器 (使用 memmap 存儲)
@@ -199,9 +214,9 @@ class ScamDetectorMemmap:
         ]
         
         # 檔案路徑
-        self.embeddings_file = os.path.join(embeddings_dir, "embeddings.dat")
-        self.index_file = os.path.join(embeddings_dir, "pos_tid_index.json")
-        self.metadata_file = os.path.join(embeddings_dir, "metadata.json")
+        self.embeddings_file = os.path.join(EMBEDDINGS_DIR, "embeddings/embeddings.dat")
+        self.index_file = os.path.join(EMBEDDINGS_DIR, "embeddings/pos_tid_index.json")
+        self.metadata_file = os.path.join(EMBEDDINGS_DIR, "embeddings/metadata.json")
         
         # 初始化
         self._init_db_connection()
@@ -779,7 +794,7 @@ def show_word_analysis() -> None:
         try:
             
             # 執行分析程式
-            subprocess.run(['python', 'analyze_scam_posts.py'], check=True)
+            subprocess.run(['python', 'src/analysis/analyze_scam_posts.py'], check=True)
             
             # 更新資料庫中的生成時間
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1486,7 +1501,7 @@ atexit.register(cleanup_database_connections)
 class SimilarSearchProcess:
     """獨立的相似貼文搜尋進程，避免 PyTorch 與 Streamlit 衝突"""
     
-    def __init__(self, embeddings_dir="embeddings_data", batch_size=32768):
+    def __init__(self, embeddings_dir = EMBEDDINGS_DIR, batch_size = 32768):
         self.embeddings_dir = embeddings_dir
         self.batch_size = batch_size
         self.process = None
@@ -1562,16 +1577,6 @@ class SimilarSearchProcess:
                       embeddings_dir, batch_size, result_queue, progress_queue, stop_event):
         """搜尋工作進程"""
         try:
-            # 在子進程中導入 PyTorch 相關模組
-            import numpy as np
-            import json
-            import os
-            from sentence_transformers import SentenceTransformer, util
-            from sqlalchemy import create_engine, text
-            import pandas as pd
-            import random
-            from torch import tensor
-            
             # 初始化 detector
             detector = ScamDetectorMemmap(
                 embeddings_dir=embeddings_dir,

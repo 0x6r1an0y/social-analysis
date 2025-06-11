@@ -21,7 +21,7 @@ def test_large_batch_sizes():
             current_texts = test_texts[:batch_size]
             
             start_time = time.time()
-            embeddings = model.encode(current_texts, batch_size=batch_size, show_progress_bar=False)
+            #embeddings = model.encode(current_texts, batch_size=batch_size, show_progress_bar=False)
             elapsed_time = time.time() - start_time
             
             texts_per_second = len(current_texts) / elapsed_time
@@ -52,7 +52,7 @@ def test_large_batch_sizes():
 def test_embedding_generator_batch_size():
     """測試在實際 embedding generator 中使用大批次大小"""
     try:
-        from embedding_generator_memmap import EmbeddingGeneratorMemmap
+        from core.embedding_generator_memmap import EmbeddingGeneratorMemmap
         
         print('\n🔧 測試 EmbeddingGeneratorMemmap 的大批次處理...')
         

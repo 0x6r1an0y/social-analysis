@@ -1,5 +1,4 @@
 from sqlalchemy import create_engine, text
-import os
 
 def delete_posts_by_category(target_category):
     """

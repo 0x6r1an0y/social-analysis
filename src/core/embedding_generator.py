@@ -1,12 +1,9 @@
-from sqlalchemy import create_engine, text, Column, LargeBinary
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, text
 from sentence_transformers import SentenceTransformer
 import pandas as pd
 import numpy as np
 import pickle
 import logging
-from typing import Optional
 import time
 
 # 設定 logging
