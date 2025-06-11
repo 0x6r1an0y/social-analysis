@@ -1,1 +1,1 @@
-ngrok http http://localhost:8501
+ngrok http --url=oy.ngrok.app 8501
