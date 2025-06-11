@@ -22,3 +22,4 @@ QSearch_Question.txt
 *.env.development
 *.env.tes
 *.new
+*.jpg

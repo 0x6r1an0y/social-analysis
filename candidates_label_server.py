@@ -16,6 +16,9 @@ import psutil
 import gc
 from typing import List, Dict, Optional
 import random
+import atexit
+import multiprocessing as mp
+from multiprocessing import Process, Queue, Manager
 
 # 自定義的 IP 過濾器
 class IPFilter(Filter):
@@ -84,26 +87,85 @@ logger.addHandler(console_handler)
 ip_filter = IPFilter()
 logger.addFilter(ip_filter)
 
-# 記錄程式啟動
-logger.info("程式啟動")
-
 # 設定資料庫連線（標記資料）
 LABELING_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
 SOURCE_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
 
-# 建立兩個資料庫的連線引擎
-labeling_engine = create_engine(LABELING_DB_URL)
-source_engine = create_engine(SOURCE_DB_URL)
-
-# 確保有 system_settings 資料表
-with labeling_engine.begin() as conn:
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS system_settings (
-            key VARCHAR(50) PRIMARY KEY,
-            value TEXT,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+def init_database_engines():
+    """初始化資料庫引擎"""
+    try:
+        # 建立兩個資料庫的連線引擎，添加連接池設定
+        labeling_engine = create_engine(
+            LABELING_DB_URL,
+            pool_size=5,  # 連接池大小
+            max_overflow=10,  # 最大溢出連接數
+            pool_pre_ping=True,  # 連接前檢查
+            pool_recycle=3600,  # 連接回收時間（秒）
+            pool_timeout=30  # 連接超時時間
         )
-    """))
+        source_engine = create_engine(
+            SOURCE_DB_URL,
+            pool_size=5,  # 連接池大小
+            max_overflow=10,  # 最大溢出連接數
+            pool_pre_ping=True,  # 連接前檢查
+            pool_recycle=3600,  # 連接回收時間（秒）
+            pool_timeout=30  # 連接超時時間
+        )
+        
+        # 測試連接
+        with labeling_engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        with source_engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            
+        logger.info("資料庫連接初始化成功")
+        return labeling_engine, source_engine
+        
+    except Exception as e:
+        logger.error(f"資料庫連接初始化失敗: {str(e)}")
+        raise
+
+def initialize_app():
+    """初始化應用程式，只在第一次載入時執行"""
+    if 'app_initialized' not in st.session_state:
+        # 記錄程式啟動
+        logger.info("程式啟動")
+        
+        # 初始化資料庫引擎
+        try:
+            labeling_engine, source_engine = init_database_engines()
+            
+            # 確保有 system_settings 資料表
+            try:
+                with labeling_engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS system_settings (
+                            key VARCHAR(50) PRIMARY KEY,
+                            value TEXT,
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+            except Exception as e:
+                logger.error(f"建立 system_settings 資料表失敗: {str(e)}")
+                st.error(f"資料庫初始化失敗: {str(e)}")
+                st.stop()
+            
+            # 將引擎存儲到 session state
+            st.session_state.labeling_engine = labeling_engine
+            st.session_state.source_engine = source_engine
+            st.session_state.app_initialized = True
+            
+        except Exception as e:
+            st.error(f"無法連接到資料庫：{str(e)}")
+            st.error("請檢查 PostgreSQL 服務是否正在運行，以及連接設定是否正確")
+            st.stop()
+
+# 初始化應用程式
+initialize_app()
+
+# 從 session state 獲取引擎
+labeling_engine = st.session_state.labeling_engine
+source_engine = st.session_state.source_engine
 
 # 新增 ScamDetectorMemmap 類別
 class ScamDetectorMemmap:
@@ -150,7 +212,14 @@ class ScamDetectorMemmap:
     def _init_db_connection(self):
         """初始化資料庫連接"""
         try:
-            self.engine = create_engine(self.db_url)
+            self.engine = create_engine(
+                self.db_url,
+                pool_size=3,  # 連接池大小
+                max_overflow=5,  # 最大溢出連接數
+                pool_pre_ping=True,  # 連接前檢查
+                pool_recycle=3600,  # 連接回收時間（秒）
+                pool_timeout=30  # 連接超時時間
+            )
             logger.info("資料庫連接成功")
         except Exception as e:
             logger.error(f"資料庫連接失敗: {str(e)}")
@@ -233,7 +302,8 @@ class ScamDetectorMemmap:
                 ORDER BY pos_tid
             """
             
-            df = pd.read_sql_query(text(sql), self.engine)
+            with self.engine.connect() as conn:
+                df = pd.read_sql_query(text(sql), conn)
             return df
             
         except Exception as e:
@@ -265,7 +335,8 @@ class ScamDetectorMemmap:
                            query_text: str, 
                            limit: int = 20,
                            threshold: float = 0.3,
-                           random_search: bool = False) -> pd.DataFrame:
+                           random_search: bool = False,
+                           progress_callback=None) -> pd.DataFrame:
         """
         搜尋相似貼文
         
@@ -274,6 +345,7 @@ class ScamDetectorMemmap:
             limit: 返回結果數量
             threshold: 相似度閾值
             random_search: 是否隨機搜尋
+            progress_callback: 進度回調函數，用於即時更新進度
         Returns:
             搜尋結果 DataFrame
         """
@@ -288,19 +360,16 @@ class ScamDetectorMemmap:
             
             # 取得所有 pos_tid 並根據 random_search 決定是否打亂
             valid_pos_tids = list(self.pos_tid_to_index.keys())
+            total_pos_tids = len(valid_pos_tids)
             if random_search:
                 random.shuffle(valid_pos_tids)
             
-            while len(results) < limit and processed < len(valid_pos_tids):
-                # 檢查是否需要停止搜尋
-                if hasattr(st, 'session_state') and st.session_state.get('stop_search', False):
-                    logger.info("收到停止搜尋指令，中斷搜尋")
-                    break
-                
+            while len(results) < limit and processed < total_pos_tids:
                 # 取出這一批的 pos_tid
                 batch_pos_tids = valid_pos_tids[offset:offset + self.batch_size]
                 if not batch_pos_tids:
                     break
+                    
                 # 查詢這一批貼文
                 placeholders = ','.join([f"'{pid}'" for pid in batch_pos_tids])
                 sql = f"""
@@ -309,9 +378,11 @@ class ScamDetectorMemmap:
                     WHERE pos_tid IN ({placeholders})
                     ORDER BY pos_tid
                 """
-                df = pd.read_sql_query(text(sql), self.engine)
+                with self.engine.connect() as conn:
+                    df = pd.read_sql_query(text(sql), conn)
                 if df.empty:
                     break
+                    
                 # 取得這批的 embeddings
                 embeddings_dict = self._get_embeddings_for_pos_tids_optimized(batch_pos_tids)
                 for _, row in df.iterrows():
@@ -330,15 +401,31 @@ class ScamDetectorMemmap:
                         results.append(result_row)
                         if len(results) >= limit:
                             break
+                            
                 processed += len(batch_pos_tids)
                 offset += len(batch_pos_tids)
-                logger.info(f"已處理 {processed} 筆，找到 {len(results)} 筆符合的結果")
+                
+                # 記錄進度
+                progress_msg = f"已處理 {processed} 筆，找到 {len(results)} 筆符合的結果"
+                logger.info(progress_msg)
+                
+                # 如果提供了進度回調函數，則調用它
+                if progress_callback:
+                    progress_callback({
+                        'processed': processed,
+                        'total': total_pos_tids,
+                        'found': len(results),
+                        'message': progress_msg
+                    })
+            
+            # 搜尋完成，回傳結果
             if results:
                 results_df = pd.DataFrame(results)
                 results_df = results_df.sort_values('similarity_score', ascending=False)
                 return results_df
             else:
                 return pd.DataFrame()
+                
         except Exception as e:
             logger.error(f"相似貼文搜尋時發生錯誤: {str(e)}")
             raise
@@ -929,10 +1016,33 @@ def show_keyword_search() -> None:
         st.session_state.exclude_keywords = None
     if 'search_logic' not in st.session_state:
         st.session_state.search_logic = None
+    if 'search_table' not in st.session_state:
+        st.session_state.search_table = 'posts_deduplicated'
     if 'label_message' not in st.session_state:
         st.session_state.label_message = None
     if 'label_message_pos_tid' not in st.session_state:
         st.session_state.label_message_pos_tid = None
+    
+    # 資料表選擇
+    table_options = {
+        'posts_deduplicated': '去重後貼文 (posts_deduplicated)',
+        'posts': '原始貼文 (posts)'
+    }
+    
+    selected_table = st.selectbox(
+        "選擇要搜尋的資料表",
+        options=list(table_options.keys()),
+        format_func=lambda x: table_options[x],
+        index=list(table_options.keys()).index(st.session_state.search_table),
+        help="選擇要搜尋的資料表。posts_deduplicated 是去重後的資料，posts 是原始資料"
+    )
+    
+    # 更新 session state
+    if selected_table != st.session_state.search_table:
+        st.session_state.search_table = selected_table
+        # 清除之前的搜尋結果
+        st.session_state.search_results = None
+        st.session_state.search_page = 0
     
     # 關鍵字輸入區域
     keywords_input = st.text_area(
@@ -971,7 +1081,8 @@ def show_keyword_search() -> None:
                 exclude_keywords=exclude_keywords,  # 新增排除關鍵字參數
                 limit=500,  # 先取得較多結果，但分頁顯示
                 group_count=1,  # 搜尋模式下不需要分組
-                search_logic=search_logic
+                search_logic=search_logic,
+                table_name=st.session_state.search_table  # 使用選擇的資料表
             )
             
             if len(results_df) == 0:
@@ -1001,6 +1112,7 @@ def show_keyword_search() -> None:
         
         # 顯示分頁資訊
         st.markdown(f"---\n#### 搜尋結果（第 {st.session_state.search_page + 1} 頁，共 {total_pages} 頁）")
+        st.caption(f"搜尋資料表：{table_options[st.session_state.search_table]}")
         
         # 計算當前頁的資料範圍
         start_idx = st.session_state.search_page * num_per_page
@@ -1094,14 +1206,18 @@ def show_similar_posts_search():
         st.session_state.similar_label_message = None
     if 'similar_label_message_pos_tid' not in st.session_state:
         st.session_state.similar_label_message_pos_tid = None
-    if 'similar_detector' not in st.session_state:
-        st.session_state.similar_detector = None
-    if 'search_in_progress' not in st.session_state:
-        st.session_state.search_in_progress = False
-    if 'stop_search' not in st.session_state:
-        st.session_state.stop_search = False
     if 'similar_search_content' not in st.session_state:
         st.session_state.similar_search_content = ""
+    # 新增進度顯示相關的 session state
+    if 'search_progress' not in st.session_state:
+        st.session_state.search_progress = None
+    if 'search_progress_message' not in st.session_state:
+        st.session_state.search_progress_message = ""
+    # 新增搜尋進程相關的 session state
+    if 'search_process' not in st.session_state:
+        st.session_state.search_process = None
+    if 'search_in_progress' not in st.session_state:
+        st.session_state.search_in_progress = False
     
     st.markdown("### 🔍 相似貼文搜尋")
     st.markdown("輸入一段文字，系統會找到語意相似的貼文")
@@ -1111,7 +1227,7 @@ def show_similar_posts_search():
     with col1:
         limit = st.number_input("最大結果數量", min_value=5, max_value=100, value=20, step=5)
     with col2:
-        threshold = st.slider("相似度閾值", min_value=0.1, max_value=0.9, value=0.7, step=0.1, help="數值越高，結果越相似")
+        threshold = st.slider("相似度閾值", min_value=0.1, max_value=0.9, value=0.7, step=0.01, help="數值越高，結果越相似")
     
     # 新增隨機搜尋選項
     random_search = st.checkbox("隨機搜尋 (Random Search)", value=False, key="similar_random_search")
@@ -1119,7 +1235,8 @@ def show_similar_posts_search():
     # 停止搜尋按鈕
     if st.session_state.search_in_progress:
         if st.button("⏹️ 停止搜尋", type="secondary", key="stop_search_button"):
-            st.session_state.stop_search = True
+            if st.session_state.search_process:
+                st.session_state.search_process.stop_search()
             st.session_state.search_in_progress = False
             st.success("已發送停止搜尋指令")
             st.rerun()
@@ -1141,156 +1258,105 @@ def show_similar_posts_search():
         
         # 設定搜尋狀態
         st.session_state.search_in_progress = True
-        st.session_state.stop_search = False
+        st.session_state.search_progress = None
+        st.session_state.search_progress_message = ""
+        
+        # 初始化搜尋進程
+        if st.session_state.search_process is None:
+            st.session_state.search_process = SimilarSearchProcess()
+        
+        # 啟動搜尋
+        st.session_state.search_process.start_search(
+            query_text=st.session_state.similar_search_query,
+            limit=limit,
+            threshold=0.7,  # 固定使用 0.7 閾值
+            random_search=random_search
+        )
         
         # 顯示搜尋狀態並重新載入頁面
         st.info("正在準備自動搜尋...")
         st.rerun()
     
-    # 如果正在進行自動搜尋且還沒有結果
-    if (st.session_state.search_in_progress and 
-        st.session_state.similar_search_query and 
-        not st.session_state.similar_search_results):
-        
-        # 顯示搜尋狀態容器
-        status_container = st.empty()
-        status_container.info("正在進行自動搜尋...")
-        
-        # 自動執行搜尋
-        try:
-            # 檢查是否已有 detector，如果沒有則初始化
-            if st.session_state.similar_detector is None:
-                status_container.info("正在載入模型...")
-                st.session_state.similar_detector = ScamDetectorMemmap(
-                    embeddings_dir="embeddings_data",
-                    batch_size=8192
-                )
-            
-            status_container.info("正在搜尋相似貼文...")
-            
-            # 執行搜尋（使用 0.7 閾值）
-            results_df = st.session_state.similar_detector.search_similar_posts(
-                query_text=st.session_state.similar_search_query,
-                limit=limit,
-                threshold=0.7,  # 固定使用 0.7 閾值
-                random_search=random_search
-            )
-            
-            st.session_state.search_in_progress = False
-            status_container.empty()
-            
-            if len(results_df) == 0:
-                st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
-                st.session_state.similar_search_results = None
-                st.session_state.similar_search_page = 0
-                return
-            
-            # 儲存搜尋結果到 session state
-            st.session_state.similar_search_results = results_df
-            st.session_state.similar_search_page = 0
-            
-            st.success(f"找到 {len(results_df)} 則相似貼文")
-            st.rerun()
-            
-        except Exception as e:
-            st.session_state.search_in_progress = False
-            status_container.empty()
-            st.error(f"自動搜尋時發生錯誤：{str(e)}")
-            logger.error(f"自動相似貼文搜尋錯誤：{str(e)}")
-            # 如果發生錯誤，清理 detector
-            if st.session_state.similar_detector is not None:
-                try:
-                    st.session_state.similar_detector.cleanup()
-                except:
-                    pass
-                st.session_state.similar_detector = None
-    
     # 手動搜尋按鈕
     if st.button("🔍 開始搜尋", type="primary", disabled=not query_text.strip(), key="similar_search_button"):
         # 設定搜尋狀態
         st.session_state.search_in_progress = True
-        st.session_state.stop_search = False
         st.session_state.similar_search_query = query_text
         st.session_state.similar_search_results = None  # 清除之前的結果
+        st.session_state.search_progress = None
+        st.session_state.search_progress_message = ""
+        
+        # 初始化搜尋進程
+        if st.session_state.search_process is None:
+            st.session_state.search_process = SimilarSearchProcess()
+        
+        # 啟動搜尋
+        st.session_state.search_process.start_search(
+            query_text=query_text,
+            limit=limit,
+            threshold=threshold,
+            random_search=random_search
+        )
         
         # 顯示搜尋狀態並重新載入頁面
         st.info("正在準備搜尋...")
         st.rerun()
     
-    # 如果正在進行手動搜尋且還沒有結果
-    if (st.session_state.search_in_progress and 
-        st.session_state.similar_search_query and 
-        not st.session_state.similar_search_results and
-        query_text.strip() == st.session_state.similar_search_query):
+    # 檢查搜尋進度
+    if st.session_state.search_in_progress and st.session_state.search_process:
+        # 檢查進度
+        progress = st.session_state.search_process.get_progress()
+        if progress:
+            st.session_state.search_progress = progress
+            st.session_state.search_progress_message = progress['message']
         
-        # 顯示搜尋狀態容器
-        status_container = st.empty()
-        status_container.info("正在進行搜尋...")
-        
-        try:
-            # 檢查是否已有 detector，如果沒有則初始化
-            if st.session_state.similar_detector is None:
-                status_container.info("正在載入模型...")
-                st.session_state.similar_detector = ScamDetectorMemmap(
-                    embeddings_dir="embeddings_data",
-                    batch_size=8192
-                )
-            
-            status_container.info("正在搜尋相似貼文...")
-            
-            # 執行搜尋（傳入 random_search 參數）
-            results_df = st.session_state.similar_detector.search_similar_posts(
-                query_text=st.session_state.similar_search_query,
-                limit=limit,
-                threshold=threshold,
-                random_search=random_search
-            )
-            
+        # 檢查結果
+        result = st.session_state.search_process.get_result()
+        if result:
             st.session_state.search_in_progress = False
-            status_container.empty()
             
-            if len(results_df) == 0:
-                st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
+            if 'error' in result:
+                st.error(f"搜尋時發生錯誤：{result['error']}")
                 st.session_state.similar_search_results = None
                 st.session_state.similar_search_page = 0
-                return
+            else:
+                # 將結果轉換回 DataFrame
+                if result['data']:
+                    results_df = pd.DataFrame(result['data'], columns=result['columns'])
+                    st.session_state.similar_search_results = results_df
+                    st.session_state.similar_search_page = 0
+                    st.success(f"找到 {len(results_df)} 則相似貼文")
+                else:
+                    st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
+                    st.session_state.similar_search_results = None
+                    st.session_state.similar_search_page = 0
             
-            # 儲存搜尋結果到 session state
-            st.session_state.similar_search_results = results_df
-            st.session_state.similar_search_page = 0
-            
-            st.success(f"找到 {len(results_df)} 則相似貼文")
             st.rerun()
-            
-        except Exception as e:
-            st.session_state.search_in_progress = False
-            status_container.empty()
-            st.error(f"搜尋時發生錯誤：{str(e)}")
-            logger.error(f"相似貼文搜尋錯誤：{str(e)}")
-            # 如果發生錯誤，清理 detector
-            if st.session_state.similar_detector is not None:
-                try:
-                    st.session_state.similar_detector.cleanup()
-                except:
-                    pass
-                st.session_state.similar_detector = None
+        
+        # 顯示進度
+        if st.session_state.search_progress_message:
+            st.info(st.session_state.search_progress_message)
+        else:
+            st.info("正在進行搜尋...")
+        
+        # 自動重新載入以更新進度
+        time.sleep(0.5)
+        st.rerun()
     
     # 清理資源按鈕（可選）
     if st.button("🧹 清理記憶體", key="cleanup_memory", help="如果遇到記憶體問題，可以點擊此按鈕清理資源"):
-        if st.session_state.similar_detector is not None:
-            try:
-                st.session_state.similar_detector.cleanup()
-                st.session_state.similar_detector = None
-                st.success("已清理記憶體資源")
-                st.rerun()
-            except Exception as e:
-                st.error(f"清理資源時發生錯誤：{str(e)}")
+        if st.session_state.search_process:
+            st.session_state.search_process.stop_search()
+            st.session_state.search_process = None
+            st.success("已清理記憶體資源")
+            st.rerun()
         else:
             st.info("沒有需要清理的資源")
         
         # 重置搜尋狀態
         st.session_state.search_in_progress = False
-        st.session_state.stop_search = False
+        st.session_state.search_progress = None
+        st.session_state.search_progress_message = ""
     
     # 如果有搜尋結果，顯示分頁內容
     if st.session_state.similar_search_results is not None:
@@ -1391,6 +1457,164 @@ def show_similar_posts_search():
                 st.rerun()
 
 #======================================================================================
+
+def cleanup_database_connections():
+    """清理所有資料庫連接"""
+    try:
+        # 清理 session state 中的引擎
+        if 'labeling_engine' in st.session_state:
+            st.session_state.labeling_engine.dispose()
+            logger.info("已清理 labeling_engine 連接")
+        if 'source_engine' in st.session_state:
+            st.session_state.source_engine.dispose()
+            logger.info("已清理 source_engine 連接")
+            
+        # 清理全域變數中的引擎（如果存在）
+        if 'labeling_engine' in globals():
+            labeling_engine.dispose()
+            logger.info("已清理全域 labeling_engine 連接")
+        if 'source_engine' in globals():
+            source_engine.dispose()
+            logger.info("已清理全域 source_engine 連接")
+    except Exception as e:
+        logger.warning(f"清理資料庫連接時發生警告: {str(e)}")
+
+# 註冊程式結束時的清理函數
+atexit.register(cleanup_database_connections)
+
+# 新增相似貼文搜尋進程類別
+class SimilarSearchProcess:
+    """獨立的相似貼文搜尋進程，避免 PyTorch 與 Streamlit 衝突"""
+    
+    def __init__(self, embeddings_dir="embeddings_data", batch_size=32768):
+        self.embeddings_dir = embeddings_dir
+        self.batch_size = batch_size
+        self.process = None
+        self.result_queue = Queue()
+        self.progress_queue = Queue()
+        self.stop_event = mp.Event()
+        
+    def start_search(self, query_text, limit=20, threshold=0.7, random_search=False):
+        """啟動搜尋進程"""
+        # 停止之前的進程（如果有的話）
+        self.stop_search()
+        
+        # 重置停止事件
+        self.stop_event.clear()
+        
+        # 啟動新進程
+        self.process = Process(
+            target=self._search_worker,
+            args=(
+                query_text, limit, threshold, random_search,
+                self.embeddings_dir, self.batch_size,
+                self.result_queue, self.progress_queue, self.stop_event
+            )
+        )
+        self.process.start()
+        
+    def stop_search(self):
+        """停止搜尋進程"""
+        if self.process and self.process.is_alive():
+            self.stop_event.set()
+            self.process.terminate()
+            self.process.join(timeout=5)
+            if self.process.is_alive():
+                self.process.kill()
+            self.process = None
+            # 清空隊列
+            try:
+                while not self.result_queue.empty():
+                    self.result_queue.get_nowait()
+                while not self.progress_queue.empty():
+                    self.progress_queue.get_nowait()
+            except:
+                pass
+        
+    def get_progress(self):
+        """獲取進度資訊"""
+        try:
+            while not self.progress_queue.empty():
+                progress = self.progress_queue.get_nowait()
+                return progress
+        except:
+            pass
+        return None
+        
+    def get_result(self):
+        """獲取搜尋結果"""
+        try:
+            if self.process and not self.process.is_alive():
+                # 進程已完成，獲取結果
+                result = self.result_queue.get(timeout=1)
+                self.process = None
+                return result
+        except:
+            pass
+        return None
+        
+    def is_running(self):
+        """檢查進程是否正在運行"""
+        return self.process is not None and self.process.is_alive()
+        
+    @staticmethod
+    def _search_worker(query_text, limit, threshold, random_search, 
+                      embeddings_dir, batch_size, result_queue, progress_queue, stop_event):
+        """搜尋工作進程"""
+        try:
+            # 在子進程中導入 PyTorch 相關模組
+            import numpy as np
+            import json
+            import os
+            from sentence_transformers import SentenceTransformer, util
+            from sqlalchemy import create_engine, text
+            import pandas as pd
+            import random
+            from torch import tensor
+            
+            # 初始化 detector
+            detector = ScamDetectorMemmap(
+                embeddings_dir=embeddings_dir,
+                batch_size=batch_size
+            )
+            
+            # 執行搜尋
+            results_df = detector.search_similar_posts(
+                query_text=query_text,
+                limit=limit,
+                threshold=threshold,
+                random_search=random_search,
+                progress_callback=lambda progress: progress_queue.put(progress) if not stop_event.is_set() else None
+            )
+            
+            # 檢查是否被停止
+            if stop_event.is_set():
+                result_queue.put({'data': [], 'columns': []})
+                return
+            
+            # 清理資源
+            detector.cleanup()
+            
+            # 將結果序列化並放入隊列
+            if not results_df.empty:
+                # 將 DataFrame 轉換為字典格式以便序列化
+                result_dict = {
+                    'data': results_df.to_dict('records'),
+                    'columns': results_df.columns.tolist()
+                }
+                result_queue.put(result_dict)
+            else:
+                result_queue.put({'data': [], 'columns': []})
+                
+        except Exception as e:
+            result_queue.put({'error': str(e)})
+        finally:
+            # 確保進程結束時清理資源
+            try:
+                import gc
+                gc.collect()
+            except:
+                pass
 
 if __name__ == '__main__':
     st.title("詐騙貼文人工標記工具")
