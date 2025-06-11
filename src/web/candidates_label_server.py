@@ -102,6 +102,10 @@ logger.addHandler(console_handler)
 ip_filter = IPFilter()
 logger.addFilter(ip_filter)
 
+# 禁用 Streamlit 相關的警告
+logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.caching').setLevel(logging.ERROR)
+
 # 設定資料庫連線（標記資料）
 LABELING_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/labeling_db"
 SOURCE_DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
@@ -201,6 +205,19 @@ class ScamDetectorMemmap:
         self.model = None
         self.embeddings_array = None
         
+        # 檢查是否在子進程中，如果是則禁用 Streamlit 警告
+        try:
+            import multiprocessing as mp
+            if mp.current_process().name != 'MainProcess':
+                # 在子進程中，禁用 Streamlit 相關的警告
+                import logging
+                logging.getLogger('streamlit').setLevel(logging.ERROR)
+                logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+                logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
+                logging.getLogger('streamlit.runtime.caching').setLevel(logging.ERROR)
+        except:
+            pass
+        
         # 預設詐騙提示詞
         self.default_scam_phrases = [
             "加入LINE", "加入Telegram", "快速賺錢", "被動收入", 
@@ -235,16 +252,41 @@ class ScamDetectorMemmap:
                 pool_recycle=3600,  # 連接回收時間（秒）
                 pool_timeout=30  # 連接超時時間
             )
-            logger.info("資料庫連接成功")
+            # 檢查是否在子進程中
+            try:
+                import multiprocessing as mp
+                if mp.current_process().name != 'MainProcess':
+                    print("[INFO] 資料庫連接成功")
+                else:
+                    logger.info("資料庫連接成功")
+            except:
+                logger.info("資料庫連接成功")
         except Exception as e:
             logger.error(f"資料庫連接失敗: {str(e)}")
             raise
             
     def _load_model(self, model_name: str):
         """載入模型"""
-        logger.info(f"正在載入模型: {model_name}")
+        # 檢查是否在子進程中
+        try:
+            import multiprocessing as mp
+            if mp.current_process().name != 'MainProcess':
+                print(f"[INFO] 正在載入模型: {model_name}")
+            else:
+                logger.info(f"正在載入模型: {model_name}")
+        except:
+            logger.info(f"正在載入模型: {model_name}")
+            
         self.model = SentenceTransformer(model_name)
-        logger.info("模型載入完成")
+        
+        try:
+            import multiprocessing as mp
+            if mp.current_process().name != 'MainProcess':
+                print("[INFO] 模型載入完成")
+            else:
+                logger.info("模型載入完成")
+        except:
+            logger.info("模型載入完成")
         
     def _load_embeddings_metadata(self):
         """載入 embeddings metadata"""
@@ -264,9 +306,21 @@ class ScamDetectorMemmap:
             self.embedding_dim = self.metadata['embedding_dim']
             self.total_embeddings = self.metadata['total_embeddings']
             
-            logger.info(f"載入 embeddings metadata：")
-            logger.info(f"  - 總記錄數: {self.total_embeddings}")
-            logger.info(f"  - Embedding 維度: {self.embedding_dim}")
+            # 檢查是否在子進程中
+            try:
+                import multiprocessing as mp
+                if mp.current_process().name != 'MainProcess':
+                    print("[INFO] 載入 embeddings metadata：")
+                    print(f"[INFO]   - 總記錄數: {self.total_embeddings}")
+                    print(f"[INFO]   - Embedding 維度: {self.embedding_dim}")
+                else:
+                    logger.info(f"載入 embeddings metadata：")
+                    logger.info(f"  - 總記錄數: {self.total_embeddings}")
+                    logger.info(f"  - Embedding 維度: {self.embedding_dim}")
+            except:
+                logger.info(f"載入 embeddings metadata：")
+                logger.info(f"  - 總記錄數: {self.total_embeddings}")
+                logger.info(f"  - Embedding 維度: {self.embedding_dim}")
             
             if not os.path.exists(self.embeddings_file):
                 raise FileNotFoundError(f"Embeddings 檔案不存在: {self.embeddings_file}")
@@ -422,16 +476,37 @@ class ScamDetectorMemmap:
                 
                 # 記錄進度
                 progress_msg = f"已處理 {processed} 筆，找到 {len(results)} 筆符合的結果"
-                logger.info(progress_msg)
+                # 檢查是否在子進程中，如果是則使用更安全的日誌記錄
+                try:
+                    import multiprocessing as mp
+                    if mp.current_process().name != 'MainProcess':
+                        # 在子進程中，使用 print 而不是 logger
+                        print(f"[INFO] {progress_msg}")
+                    else:
+                        logger.info(progress_msg)
+                except:
+                    # 如果無法檢查進程，則使用 logger
+                    logger.info(progress_msg)
                 
                 # 如果提供了進度回調函數，則調用它
                 if progress_callback:
-                    progress_callback({
+                    progress_info = {
                         'processed': processed,
                         'total': total_pos_tids,
                         'found': len(results),
                         'message': progress_msg
-                    })
+                    }
+                    # 檢查回調函數是否返回 False（表示需要停止）
+                    if progress_callback(progress_info) is False:
+                        try:
+                            import multiprocessing as mp
+                            if mp.current_process().name != 'MainProcess':
+                                print("[INFO] 收到停止信號，提前結束搜尋")
+                            else:
+                                logger.info("收到停止信號，提前結束搜尋")
+                        except:
+                            logger.info("收到停止信號，提前結束搜尋")
+                        break
             
             # 搜尋完成，回傳結果
             if results:
@@ -1254,6 +1329,32 @@ def show_similar_posts_search():
                 st.session_state.search_process.stop_search()
             st.session_state.search_in_progress = False
             st.success("已發送停止搜尋指令")
+            
+            # 嘗試獲取已找到的結果
+            if st.session_state.search_process:
+                result = st.session_state.search_process.get_result()
+                if result and 'data' in result:
+                    if result['data']:
+                        results_df = pd.DataFrame(result['data'], columns=result['columns'])
+                        st.session_state.similar_search_results = results_df
+                        st.session_state.similar_search_page = 0
+                        if result.get('stopped', False):
+                            st.info(f"搜尋已停止，找到 {len(results_df)} 則相似貼文")
+                        else:
+                            st.success(f"找到 {len(results_df)} 則相似貼文")
+                    else:
+                        if result.get('stopped', False):
+                            st.warning("搜尋已停止，沒有找到相似的貼文")
+                        else:
+                            st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
+                        st.session_state.similar_search_results = None
+                        st.session_state.similar_search_page = 0
+            
+            # 清理進程
+            if st.session_state.search_process:
+                st.session_state.search_process.cleanup()
+                st.session_state.search_process = None
+            
             st.rerun()
     
     # 查詢文字輸入
@@ -1271,14 +1372,18 @@ def show_similar_posts_search():
         # 清除跳轉內容，避免重複執行
         st.session_state.similar_search_content = ""
         
+        # 清理之前的進程
+        if st.session_state.search_process:
+            st.session_state.search_process.cleanup()
+            st.session_state.search_process = None
+        
         # 設定搜尋狀態
         st.session_state.search_in_progress = True
         st.session_state.search_progress = None
         st.session_state.search_progress_message = ""
         
         # 初始化搜尋進程
-        if st.session_state.search_process is None:
-            st.session_state.search_process = SimilarSearchProcess()
+        st.session_state.search_process = SimilarSearchProcess()
         
         # 啟動搜尋
         st.session_state.search_process.start_search(
@@ -1294,6 +1399,11 @@ def show_similar_posts_search():
     
     # 手動搜尋按鈕
     if st.button("🔍 開始搜尋", type="primary", disabled=not query_text.strip(), key="similar_search_button"):
+        # 清理之前的進程
+        if st.session_state.search_process:
+            st.session_state.search_process.cleanup()
+            st.session_state.search_process = None
+        
         # 設定搜尋狀態
         st.session_state.search_in_progress = True
         st.session_state.similar_search_query = query_text
@@ -1302,8 +1412,7 @@ def show_similar_posts_search():
         st.session_state.search_progress_message = ""
         
         # 初始化搜尋進程
-        if st.session_state.search_process is None:
-            st.session_state.search_process = SimilarSearchProcess()
+        st.session_state.search_process = SimilarSearchProcess()
         
         # 啟動搜尋
         st.session_state.search_process.start_search(
@@ -1325,7 +1434,7 @@ def show_similar_posts_search():
             st.session_state.search_progress = progress
             st.session_state.search_progress_message = progress['message']
         
-        # 檢查結果
+        # 檢查結果 - 更頻繁地檢查
         result = st.session_state.search_process.get_result()
         if result:
             st.session_state.search_in_progress = False
@@ -1340,11 +1449,22 @@ def show_similar_posts_search():
                     results_df = pd.DataFrame(result['data'], columns=result['columns'])
                     st.session_state.similar_search_results = results_df
                     st.session_state.similar_search_page = 0
-                    st.success(f"找到 {len(results_df)} 則相似貼文")
+                    if result.get('stopped', False):
+                        st.info(f"搜尋已停止，找到 {len(results_df)} 則相似貼文")
+                    else:
+                        st.success(f"找到 {len(results_df)} 則相似貼文")
                 else:
-                    st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
+                    if result.get('stopped', False):
+                        st.warning("搜尋已停止，沒有找到相似的貼文")
+                    else:
+                        st.warning("沒有找到相似的貼文，請嘗試降低相似度閾值或修改搜尋文字")
                     st.session_state.similar_search_results = None
                     st.session_state.similar_search_page = 0
+            
+            # 清理進程
+            if st.session_state.search_process:
+                st.session_state.search_process.cleanup()
+                st.session_state.search_process = None
             
             st.rerun()
         
@@ -1354,14 +1474,19 @@ def show_similar_posts_search():
         else:
             st.info("正在進行搜尋...")
         
-        # 自動重新載入以更新進度
-        time.sleep(0.5)
+        # 檢查進程狀態
+        if st.session_state.search_process and st.session_state.search_process.process:
+            if not st.session_state.search_process.process.is_alive():
+                st.info("搜尋進程已完成，正在獲取結果...")
+        
+        # 自動重新載入以更新進度 - 減少延遲
+        time.sleep(0.2)
         st.rerun()
     
     # 清理資源按鈕（可選）
     if st.button("🧹 清理記憶體", key="cleanup_memory", help="如果遇到記憶體問題，可以點擊此按鈕清理資源"):
         if st.session_state.search_process:
-            st.session_state.search_process.stop_search()
+            st.session_state.search_process.cleanup()
             st.session_state.search_process = None
             st.success("已清理記憶體資源")
             st.rerun()
@@ -1476,26 +1601,172 @@ def show_similar_posts_search():
 def cleanup_database_connections():
     """清理所有資料庫連接"""
     try:
-        # 清理 session state 中的引擎
-        if 'labeling_engine' in st.session_state:
-            st.session_state.labeling_engine.dispose()
-            logger.info("已清理 labeling_engine 連接")
-        if 'source_engine' in st.session_state:
-            st.session_state.source_engine.dispose()
-            logger.info("已清理 source_engine 連接")
-            
+        # 檢查是否在 Streamlit 上下文中
+        has_streamlit_context = False
+        try:
+            # 嘗試訪問 Streamlit context
+            if hasattr(st, 'session_state'):
+                has_streamlit_context = True
+        except:
+            pass
+        
+        if has_streamlit_context:
+            # 在 Streamlit 上下文中執行清理
+            try:
+                # 清理 session state 中的引擎
+                if 'labeling_engine' in st.session_state:
+                    st.session_state.labeling_engine.dispose()
+                    logger.info("已清理 labeling_engine 連接")
+                if 'source_engine' in st.session_state:
+                    st.session_state.source_engine.dispose()
+                    logger.info("已清理 source_engine 連接")
+                    
+                # 清理搜尋進程
+                if 'search_process' in st.session_state and st.session_state.search_process:
+                    st.session_state.search_process.cleanup()
+                    logger.info("已清理搜尋進程")
+            except Exception as e:
+                logger.warning(f"清理 session state 資源時發生警告: {str(e)}")
+        
         # 清理全域變數中的引擎（如果存在）
-        if 'labeling_engine' in globals():
-            labeling_engine.dispose()
-            logger.info("已清理全域 labeling_engine 連接")
-        if 'source_engine' in globals():
-            source_engine.dispose()
-            logger.info("已清理全域 source_engine 連接")
+        try:
+            if 'labeling_engine' in globals():
+                labeling_engine.dispose()
+                logger.info("已清理全域 labeling_engine 連接")
+        except Exception as e:
+            logger.warning(f"清理全域 labeling_engine 時發生警告: {str(e)}")
+            
+        try:
+            if 'source_engine' in globals():
+                source_engine.dispose()
+                logger.info("已清理全域 source_engine 連接")
+        except Exception as e:
+            logger.warning(f"清理全域 source_engine 時發生警告: {str(e)}")
+            
     except Exception as e:
         logger.warning(f"清理資料庫連接時發生警告: {str(e)}")
 
-# 註冊程式結束時的清理函數
-atexit.register(cleanup_database_connections)
+# 註冊程式結束時的清理函數（使用更安靜的版本）
+def quiet_cleanup():
+    """安靜的資源清理函數，用於程式結束時"""
+    try:
+        # 檢查是否在 Streamlit 上下文中
+        has_streamlit_context = False
+        try:
+            if hasattr(st, 'session_state'):
+                has_streamlit_context = True
+        except:
+            pass
+        
+        if has_streamlit_context:
+            # 清理 session state 中的引擎
+            if 'labeling_engine' in st.session_state:
+                try:
+                    st.session_state.labeling_engine.dispose()
+                except:
+                    pass
+                    
+            if 'source_engine' in st.session_state:
+                try:
+                    st.session_state.source_engine.dispose()
+                except:
+                    pass
+                    
+            # 清理搜尋進程
+            if 'search_process' in st.session_state and st.session_state.search_process:
+                try:
+                    st.session_state.search_process.cleanup()
+                except:
+                    pass
+        
+        # 清理全域變數中的引擎
+        if 'labeling_engine' in globals():
+            try:
+                labeling_engine.dispose()
+            except:
+                pass
+                
+        if 'source_engine' in globals():
+            try:
+                source_engine.dispose()
+            except:
+                pass
+                
+        # 強制垃圾回收
+        try:
+            import gc
+            gc.collect()
+        except:
+            pass
+            
+    except:
+        # 完全忽略所有錯誤，避免在程式結束時產生任何日誌
+        pass
+
+# 註冊安靜的清理函數
+atexit.register(quiet_cleanup)
+
+# 添加一個更安全的清理函數，用於手動調用
+def safe_cleanup():
+    """安全的資源清理函數，可以在任何時候調用"""
+    try:
+        # 檢查是否在 Streamlit 上下文中
+        has_streamlit_context = False
+        try:
+            if hasattr(st, 'session_state'):
+                has_streamlit_context = True
+        except:
+            pass
+        
+        if has_streamlit_context:
+            # 清理 session state 中的引擎
+            if 'labeling_engine' in st.session_state:
+                try:
+                    st.session_state.labeling_engine.dispose()
+                    logger.info("已清理 labeling_engine 連接")
+                except:
+                    pass
+                    
+            if 'source_engine' in st.session_state:
+                try:
+                    st.session_state.source_engine.dispose()
+                    logger.info("已清理 source_engine 連接")
+                except:
+                    pass
+                    
+            # 清理搜尋進程
+            if 'search_process' in st.session_state and st.session_state.search_process:
+                try:
+                    st.session_state.search_process.cleanup()
+                    logger.info("已清理搜尋進程")
+                except:
+                    pass
+        
+        # 清理全域變數中的引擎
+        if 'labeling_engine' in globals():
+            try:
+                labeling_engine.dispose()
+                logger.info("已清理全域 labeling_engine 連接")
+            except:
+                pass
+                
+        if 'source_engine' in globals():
+            try:
+                source_engine.dispose()
+                logger.info("已清理全域 source_engine 連接")
+            except:
+                pass
+                
+        # 強制垃圾回收
+        try:
+            import gc
+            gc.collect()
+        except:
+            pass
+            
+    except Exception as e:
+        # 不記錄警告，避免在程式結束時產生額外的日誌
+        pass
 
 # 新增相似貼文搜尋進程類別
 class SimilarSearchProcess:
@@ -1508,14 +1779,27 @@ class SimilarSearchProcess:
         self.result_queue = Queue()
         self.progress_queue = Queue()
         self.stop_event = mp.Event()
+        self.found_results = []  # 儲存已找到的結果
+        self.is_stopped = False  # 標記是否被停止
         
     def start_search(self, query_text, limit=20, threshold=0.7, random_search=False):
         """啟動搜尋進程"""
         # 停止之前的進程（如果有的話）
         self.stop_search()
         
-        # 重置停止事件
+        # 重置狀態
         self.stop_event.clear()
+        self.found_results = []
+        self.is_stopped = False
+        
+        # 清空隊列
+        try:
+            while not self.result_queue.empty():
+                self.result_queue.get_nowait()
+            while not self.progress_queue.empty():
+                self.progress_queue.get_nowait()
+        except:
+            pass
         
         # 啟動新進程
         self.process = Process(
@@ -1529,18 +1813,26 @@ class SimilarSearchProcess:
         self.process.start()
         
     def stop_search(self):
-        """停止搜尋進程"""
+        """停止搜尋進程並保留已找到的結果"""
         if self.process and self.process.is_alive():
             self.stop_event.set()
-            self.process.terminate()
-            self.process.join(timeout=5)
+            self.is_stopped = True
+            
+            # 等待進程結束，但不要立即殺死它
+            self.process.join(timeout=10)
+            
+            # 如果進程還在運行，才強制終止
             if self.process.is_alive():
-                self.process.kill()
+                self.process.terminate()
+                self.process.join(timeout=5)
+                if self.process.is_alive():
+                    self.process.kill()
+            
             self.process = None
-            # 清空隊列
+            
+            # 不要清空結果隊列，讓 get_result 能夠獲取已找到的結果
+            # 只清空進度隊列
             try:
-                while not self.result_queue.empty():
-                    self.result_queue.get_nowait()
                 while not self.progress_queue.empty():
                     self.progress_queue.get_nowait()
             except:
@@ -1559,29 +1851,96 @@ class SimilarSearchProcess:
     def get_result(self):
         """獲取搜尋結果"""
         try:
+            # 如果進程已完成或被停止，嘗試獲取結果
             if self.process and not self.process.is_alive():
-                # 進程已完成，獲取結果
-                result = self.result_queue.get(timeout=1)
-                self.process = None
-                return result
-        except:
-            pass
+                # 進程已完成，嘗試獲取結果
+                try:
+                    result = self.result_queue.get(timeout=1)
+                    self.process = None
+                    logger.info(f"進程完成，獲取到結果：{len(result.get('data', []))} 筆")
+                    return result
+                except:
+                    # 如果隊列為空，返回空結果
+                    logger.info("進程完成，但隊列為空")
+                    return {'data': [], 'columns': []}
+            elif self.is_stopped:
+                # 進程被停止，嘗試獲取結果
+                try:
+                    result = self.result_queue.get(timeout=1)
+                    self.process = None
+                    logger.info(f"進程被停止，獲取到結果：{len(result.get('data', []))} 筆")
+                    return result
+                except:
+                    # 如果隊列為空且被停止，返回空結果
+                    logger.info("進程被停止，但隊列為空")
+                    return {'data': [], 'columns': [], 'stopped': True}
+        except Exception as e:
+            logger.error(f"獲取結果時發生錯誤：{str(e)}")
         return None
         
     def is_running(self):
         """檢查進程是否正在運行"""
         return self.process is not None and self.process.is_alive()
         
+    def cleanup(self):
+        """清理資源"""
+        self.stop_search()
+        self.process = None
+        self.found_results = []
+        self.is_stopped = False
+        
     @staticmethod
     def _search_worker(query_text, limit, threshold, random_search, 
                       embeddings_dir, batch_size, result_queue, progress_queue, stop_event):
         """搜尋工作進程"""
         try:
+            # 重新設定 Python 路徑（避免序列化問題）
+            import sys
+            import os
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            src_dir = os.path.dirname(current_dir)
+            if src_dir not in sys.path:
+                sys.path.insert(0, src_dir)
+            
+            # 設定日誌 - 避免 Streamlit 相關的警告
+            import logging
+            # 清除所有現有的處理器
+            for handler in logging.root.handlers[:]:
+                logging.root.removeHandler(handler)
+            
+            # 設定基本的日誌配置
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S',
+                handlers=[
+                    logging.StreamHandler()
+                ]
+            )
+            
+            # 禁用 Streamlit 相關的警告
+            logging.getLogger('streamlit').setLevel(logging.ERROR)
+            logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+            logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
+            logging.getLogger('streamlit.runtime.caching').setLevel(logging.ERROR)
+            
+            worker_logger = logging.getLogger(__name__)
+            
             # 初始化 detector
             detector = ScamDetectorMemmap(
                 embeddings_dir=embeddings_dir,
                 batch_size=batch_size
             )
+            
+            # 定義進度回調函數
+            def progress_callback(progress):
+                if stop_event.is_set():
+                    return False  # 返回 False 表示需要停止
+                try:
+                    progress_queue.put(progress)
+                except:
+                    pass
+                return True  # 返回 True 表示繼續搜尋
             
             # 執行搜尋
             results_df = detector.search_similar_posts(
@@ -1589,12 +1948,23 @@ class SimilarSearchProcess:
                 limit=limit,
                 threshold=threshold,
                 random_search=random_search,
-                progress_callback=lambda progress: progress_queue.put(progress) if not stop_event.is_set() else None
+                progress_callback=progress_callback
             )
             
             # 檢查是否被停止
             if stop_event.is_set():
-                result_queue.put({'data': [], 'columns': []})
+                # 即使被停止，也要返回已找到的結果
+                if not results_df.empty:
+                    result_dict = {
+                        'data': results_df.to_dict('records'),
+                        'columns': results_df.columns.tolist(),
+                        'stopped': True
+                    }
+                    result_queue.put(result_dict)
+                    worker_logger.info(f"搜尋被停止，找到 {len(results_df)} 筆結果")
+                else:
+                    result_queue.put({'data': [], 'columns': [], 'stopped': True})
+                    worker_logger.info("搜尋被停止，沒有找到結果")
                 return
             
             # 清理資源
@@ -1608,11 +1978,17 @@ class SimilarSearchProcess:
                     'columns': results_df.columns.tolist()
                 }
                 result_queue.put(result_dict)
+                worker_logger.info(f"搜尋完成，找到 {len(results_df)} 筆結果")
             else:
                 result_queue.put({'data': [], 'columns': []})
+                worker_logger.info("搜尋完成，沒有找到結果")
                 
         except Exception as e:
-            result_queue.put({'error': str(e)})
+            try:
+                result_queue.put({'error': str(e)})
+                worker_logger.error(f"搜尋時發生錯誤：{str(e)}")
+            except:
+                pass
         finally:
             # 確保進程結束時清理資源
             try:
@@ -1693,3 +2069,26 @@ if __name__ == '__main__':
             st.info("💡 搜尋文字已自動填入，系統將自動執行搜尋")
         
         show_similar_posts_search()
+    
+    # 在頁面底部添加資源清理選項
+    st.markdown("---")
+    st.markdown("### 🔧 系統維護")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🧹 手動清理資源", type="secondary", help="如果遇到記憶體問題或連接問題，可以點擊此按鈕清理資源"):
+            safe_cleanup()
+            st.success("✅ 資源清理完成")
+            st.rerun()
+    
+    with col2:
+        # 顯示記憶體使用情況
+        try:
+            memory_info = get_memory_usage()
+            st.metric(
+                label="記憶體使用率",
+                value=f"{memory_info['percent']:.1f}%",
+                help=f"RSS: {memory_info['rss_mb']:.1f} MB, VMS: {memory_info['vms_mb']:.1f} MB"
+            )
+        except:
+            st.info("無法獲取記憶體使用情況")
