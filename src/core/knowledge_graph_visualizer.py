@@ -223,7 +223,7 @@ def analyze_graph_statistics(all_data, G, degree_threshold=1):
 
 def generate_multiple_thresholds(all_data, output_dir):
     """生成多個不同閾值的圖譜"""
-    thresholds = [2, 3, 5]  # 可以調整這些閾值
+    thresholds = [2, 3, 4]  # 可以調整這些閾值
     
     for threshold in thresholds:
         print(f"\n生成連接度閾值 {threshold} 的圖譜...")

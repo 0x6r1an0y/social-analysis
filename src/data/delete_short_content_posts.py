@@ -7,7 +7,7 @@ def preview_short_content_posts(max_length=30):
     Args:
         max_length: 最大內容長度（預設30個字）
     """
-    DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
+    DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
     
     try:
         engine = create_engine(DB_URL)
@@ -18,7 +18,7 @@ def preview_short_content_posts(max_length=30):
             # 查詢要刪除的記錄統計
             query = text("""
                 SELECT page_name, COUNT(*) as post_count
-                FROM posts_deduplicated 
+                FROM posts 
                 WHERE LENGTH(content) < :max_length
                 AND content IS NOT NULL
                 GROUP BY page_name 
@@ -35,7 +35,7 @@ def preview_short_content_posts(max_length=30):
             # 查詢總數
             total_query = text("""
                 SELECT COUNT(*) as total_count
-                FROM posts_deduplicated 
+                FROM posts
                 WHERE LENGTH(content) < :max_length
                 AND content IS NOT NULL
             """)
@@ -56,7 +56,7 @@ def preview_short_content_posts(max_length=30):
             # 顯示一些樣本內容
             sample_query = text("""
                 SELECT pos_tid, page_name, content, LENGTH(content) as content_length
-                FROM posts_deduplicated 
+                FROM posts
                 WHERE LENGTH(content) < :max_length
                 AND content IS NOT NULL
                 ORDER BY LENGTH(content) ASC
@@ -88,7 +88,7 @@ def delete_short_content_posts(max_length=30):
     Args:
         max_length: 最大內容長度（預設30個字）
     """
-    DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
+    DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
     
     try:
         engine = create_engine(DB_URL)
@@ -99,7 +99,7 @@ def delete_short_content_posts(max_length=30):
             # 1. 先查詢要刪除的 pos_tid
             query = text("""
                 SELECT pos_tid, page_name, content, LENGTH(content) as content_length
-                FROM posts_deduplicated 
+                FROM posts 
                 WHERE LENGTH(content) < :max_length
                 AND content IS NOT NULL
             """)
@@ -171,7 +171,7 @@ def delete_short_content_posts(max_length=30):
 
 def show_content_length_distribution():
     """顯示內容長度分布統計"""
-    DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis_hash"
+    DB_URL = "postgresql+psycopg2://postgres:00000000@localhost:5432/social_media_analysis"
     
     try:
         engine = create_engine(DB_URL)
@@ -204,7 +204,7 @@ def show_content_length_distribution():
                             WHEN LENGTH(content) < 200 THEN 7
                             ELSE 8
                         END as sort_order
-                    FROM posts_deduplicated 
+                    FROM posts
                     WHERE content IS NOT NULL
                 )
                 SELECT 
